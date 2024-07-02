@@ -29,7 +29,9 @@ This repository also contains a couple python analysis tools:
 
 ## Hardware Needed
 
-1. ESP32S3 dev board, such as QtPy ESP32S3.
+1. ESP32S3 dev board - ideally one with USB connectors for both a UART and the
+   native USB so that you can gather log data more easily. I recommend the
+   [ESP32-S3-DevKitC-1 v1.0](https://www.adafruit.com/product/5312)
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
    
