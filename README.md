@@ -1,23 +1,129 @@
-# ESP++ Template
+# Esp-Usb-Latency-Test
 
-Template repository for building an ESP app with ESP++ (espp) components and
-ESP-IDF components.
+Code for performing end-to-end latency test for inputs. Can be configured in two ways:
+1. ADC Measurement for end to end with a phone: actuate the button, then use a
+   photo-diode/photo-transistor to measure when the screen changes and computes
+   the time it took.
+2. Hosted measurement for end to end with the ESP: actuate the button, then
+   measure the time it takes to receive the updated input report.
 
-## Development
+See also [esp-latency-test](https://github.com/finger563/esp-latency-test)
 
-This repository is designed to be used as a template repository - so you can
-sepcify this as the template repository type when creating a new repository on
-GitHub.
+This repository also contains a couple python analysis tools:
+* [`analysis.py`](./analysis.py) can be used to plot a histogram of latency
+  values that are measured from the system.
+* [`multi-analysis.py`](./multi-analysis.py) can be used to analyze multiple
+  controller analysis files simultaneously, plotting them in a single box-plot
+  of latency vs battery life according to a meta-config file provided.
 
-After setting this as the template, make sure to update the following:
-- [This README](./README.md) to contain the relevant description and images of your project
-- The [./CMakeLists.txt](./CMakeLists.txt) file to have the components that you
-  want to use (and any you may have added to the [components
-  folder](./components)) as well as to update the project name
-- The [./main/main.cpp](./main/main.cpp) To run the main code for your app. The
-  [main folder](./main) is also where you can put additional header and source
-  files that you don't think belong in their own components but help keep the
-  main code clean.
+<!-- markdown-toc start - Don't edit this section. Run M-x markdown-toc-refresh-toc -->
+**Table of Contents**
+
+- [Esp-Usb-Latency-Test](#esp-usb-latency-test)
+    - [Development](#development)
+    - [Cloning](#cloning)
+    - [Build and Flash](#build-and-flash)
+    - [Output](#output)
+
+<!-- markdown-toc end -->
+
+## Hardware Needed
+
+1. ESP32S3 dev board, such as QtPy ESP32S3.
+2. Dupont wires to connect to button on controller (patch into button and gnd
+   signal).
+   
+For measurement method (1/ADC) above, you'll also need:
+3. Photo-diode for measuring the brightness / light of the screen. I used
+   [Amazon 3mm flat head PhotoDiode](https://www.amazon.com/dp/B07VNSX74J).
+4. Resistor (1k-10k) from photodiode output to ground.
+
+If you're planning to run method (1/ADC) above, you'll likely need to run the
+embedded code once with `CONFIG_DEBUG_PLOT_ALL` enabled (via menuconfig), so
+that you can see the ADC values for the screen on/off state based on the screen
+/ app / sensor you select and how you've mounted them. I use duct tape to
+"mount" the sensor to my phone screen :sweat_smile:. Then you can configure the
+appropriate upper/lower thresholds accordingly to take data.
+
+Some controllers, such as 
+* `Xbox Elite Wireless Controller 2 (model 1797)`
+* `Xbox Wireless Controller (model 1708)`
+* `Playstation Dualsense (model CFI-SCT1W)`
+* `Nintendo Switch Pro Controller`
+
+## Use
+
+It's recommended to use the
+[uart_serial_plotter](https://github.com/esp-cpp/uart_serial_plotter) after
+flashing to monitor and plot the latency values in real time. If you do this,
+you can then also save the resultant output to a text file.
+
+This text file can be loaded and parsed by the [`analysis.py`](./analysis.py)
+script and the [`multi-analysis.py`](./multi-analysis.py) script.
+
+### Real-time Plotting
+
+You can use the
+[uart_serial_plotter](https://github.com/esp-cpp/uart_serial_plotter) to plot
+the latency values in real time.
+
+``` sh
+# follow setup / use instructions in esp-cpp/uart_serial_plotter repo
+➜  uart_serial_plotter git:(master) $ source env/bin/activate
+(env) ➜  uart_serial_plotter git:(master) $ python src/main.py
+```
+
+It will automatically find and open the serial port with the esp32 attached. If
+there are multiple, you can use the `Serial` menu. to select another port.
+
+If you want to save the recorded data to a file, you can use `File > Export UART
+Data` command to save the data to a `txt` file.
+
+### Analysis
+
+#### Setup
+
+These setup steps only need to be run the first time you set up the python
+environment.
+
+``` sh
+# create the environment
+➜  esp-usb-latency-test git:(main) $ python3 -m venv env
+
+# activate the environment
+➜  esp-usb-latency-test git:(main) $ source env/bin/activate
+
+# install the dependencies (matplotlib, numpy)
+(env) ➜  esp-usb-latency-test git:(main) $ pip install -r requirements.txt
+```
+
+#### Running
+
+Any time you have a text file of csv data (such as what comes from the esp32
+code), you can run the python script on it to generate a histogram.
+
+``` sh
+# This will run an interactive plot with matplotlib
+(env) ➜  esp-usb-latency-test git:(main) $ python ./analysis.py tests/2024-05-30.txt
+
+# This will simply save the output to the provided png file (destination folder must exist if provided)
+(env) ➜  esp-usb-latency-test git:(main) $ python ./analysis.py tests/2024-05-30.txt --output output/2024-05-30.png
+
+# you can also specify your own title
+(env) ➜  esp-usb-latency-test git:(main) $ python ./analysis.py tests/2024-05-30-15ms-wake.txt --output output/2024-05-30-15ms-wake.png --title "Latency Histogram"
+```
+
+You can also run the `multi-analysis.py` script to analyze multiple controller
+latency files at once. This script will generate a box plot of the latency
+values for each controller, and a scatter plot of latency vs battery life.
+
+``` sh
+# this will simply load in the files listed in the meta-config (csv) file and plot them all
+(env) ➜  esp-usb-latency-test git:(main) $ python ./multi-analysis.py hosted.csv
+
+# you can optionally provide a title for the plot
+(env) ➜  esp-usb-latency-test git:(main) $ python ./multi-analysis.py hosted.csv --title "Latency vs Battery Life"
+```
 
 ## Cloning
 
@@ -25,7 +131,7 @@ Since this repo contains a submodule, you need to make sure you clone it
 recursively, e.g. with:
 
 ``` sh
-git clone --recurse-submodules <your repo name>
+git clone --recurse-submodules git@github.com:finger563/esp-usb-latency-test
 ```
 
 Alternatively, you can always ensure the submodules are up to date after cloning
@@ -47,10 +153,4 @@ idf.py -p PORT flash monitor
 
 (To exit the serial monitor, type ``Ctrl-]``.)
 
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
-
-## Output
-
-Example screenshot of the console output from this app:
-
-![CleanShot 2023-07-12 at 14 01 21](https://github.com/esp-cpp/template/assets/213467/7f8abeae-121b-4679-86d8-7214a76f1b75)
+See the Getting Started Guide for full steps to configure and use ESP-IDF to build 
