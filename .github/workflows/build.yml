@@ -18,3 +18,4 @@ jobs:
       with:
         esp_idf_version: release-v5.2
         path: '.'
+        target: esp32s3
