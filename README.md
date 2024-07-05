@@ -66,6 +66,7 @@ Some controllers, such as
 * `Xbox Wireless Controller (model 1708)`
 * `Playstation Dualsense (model CFI-SCT1W)`
 * `Nintendo Switch Pro Controller`
+* `8BitDo Pro 2` (note: it should be set to `D` compatibility setting)
 
 ## Use
 
