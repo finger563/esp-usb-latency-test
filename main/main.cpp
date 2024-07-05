@@ -78,10 +78,26 @@ extern "C" void app_main(void) {
 
   logger.info("Bootup");
 
-  // set GPIO12 (dev_vbus_en) high to enable VBUS output to USB device
+  // set GPIO18 (USB_SEL) to high to enable USB Host (receptacle) mode. Default
+  // is low (USB device)
+  logger.info("Enabling USB Host mode");
+  static constexpr auto GPIO_USB_SEL = GPIO_NUM_18;
+  gpio_set_direction(GPIO_USB_SEL, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_USB_SEL, 1);
+
+  // set GPIO12 (dev_vbus_en) high to enable VBUS output to USB device. Default
+  // is low (disabled)
+  logger.info("Enabling VBUS output to USB device");
   static constexpr auto GPIO_DEV_VBUS_EN = GPIO_NUM_12;
   gpio_set_direction(GPIO_DEV_VBUS_EN, GPIO_MODE_OUTPUT);
   gpio_set_level(GPIO_DEV_VBUS_EN, 1);
+
+  // Set GPIO17 (IDEV_LIMIT_EN) high to enable current limiting IC to output
+  // voltage
+  logger.info("Enabling current limiting IC to output voltage");
+  static constexpr auto GPIO_IDEV_LIMIT_EN = GPIO_NUM_17;
+  gpio_set_direction(GPIO_IDEV_LIMIT_EN, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_IDEV_LIMIT_EN, 1);
 
   app_event_queue_t evt_queue;
 
@@ -182,7 +198,10 @@ extern "C" void app_main(void) {
  */
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
 {
-  logger.debug("Generic report: ");
+  uint64_t time = esp_timer_get_time();
+  uint64_t seconds = time / 1e6f;
+  uint64_t milliseconds = (time % 1000000) / 1e3f;
+  fmt::print("[{}.{:03}] Generic report: ", seconds, milliseconds);
   for (int i = 0; i < length; i++) {
     printf("%02X", data[i]);
   }
@@ -214,16 +233,16 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
     hid_host_generic_report_callback(data, data_length);
     break;
   case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
-    logger.info("HID Device, protocol '%s' DISCONNECTED",
+    logger.info("HID Device, protocol '{}' DISCONNECTED",
              hid_proto_name_str[dev_params.proto]);
     ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
     break;
   case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
-    logger.info("HID Device, protocol '%s' TRANSFER_ERROR",
+    logger.info("HID Device, protocol '{}' TRANSFER_ERROR",
              hid_proto_name_str[dev_params.proto]);
     break;
   default:
-    logger.error("HID Device, protocol '%s' Unhandled event",
+    logger.error("HID Device, protocol '{}' Unhandled event",
              hid_proto_name_str[dev_params.proto]);
     break;
   }
@@ -245,7 +264,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 
   switch (event) {
   case HID_HOST_DRIVER_EVENT_CONNECTED: {
-    logger.info("HID Device, protocol '%s' CONNECTED",
+    logger.info("HID Device, protocol '{}' CONNECTED",
              hid_proto_name_str[dev_params.proto]);
 
     const hid_host_device_config_t dev_config = {

@@ -34,7 +34,9 @@ This repository also contains a couple python analysis tools:
    [esp32-s3-usb-otg
    devkit](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-usb-otg/user_guide.html)
    ([mouser
-   link](https://www.mouser.com/ProductDetail/Espressif-Systems/ESP32-S3-USB-OTG?qs=TCDPyi3sCW2REilQUpYpuw%3D%3D))
+   link](https://www.mouser.com/ProductDetail/Espressif-Systems/ESP32-S3-USB-OTG?qs=TCDPyi3sCW2REilQUpYpuw%3D%3D)).
+   You will need to make sure it can provide VBUS power to the device under
+   test.
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
    
