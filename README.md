@@ -190,6 +190,9 @@ See the Getting Started Guide for full steps to configure and use ESP-IDF to bui
 Test Setup:
 ![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
 
+Testing multiple controllers:
+![CleanShot 2024-07-05 at 16 13 07](https://github.com/finger563/esp-usb-latency-test/assets/213467/2d874ad8-d968-4a78-8a9a-e8fc028b5e92)
+
 Xbox-Alike:
 ![CleanShot 2024-07-05 at 14 31 19](https://github.com/finger563/esp-usb-latency-test/assets/213467/d8f3aef3-4ed2-4c83-b50d-a073672c6dff)
 
