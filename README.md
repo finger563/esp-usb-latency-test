@@ -62,11 +62,15 @@ that you can see the ADC values for the screen on/off state based on the screen
 appropriate upper/lower thresholds accordingly to take data.
 
 Some controllers, such as 
-* `Xbox Elite Wireless Controller 2 (model 1797)`
-* `Xbox Wireless Controller (model 1708)`
-* `Playstation Dualsense (model CFI-SCT1W)`
-* `Nintendo Switch Pro Controller`
 * `8BitDo Pro 2` (note: it should be set to `D` compatibility setting)
+* `Backbone One` (USB Receptacle)
+* `Playstation Dualsense (model CFI-SCT1W)`
+* `Xbox Elite Wireless Controller 2 (model 1797)` (note: currently doesn't work
+  because it shows up as multiple usb devices)
+* `Xbox Wireless Controller (model 1708)` (note: currently doesn't work because
+  it shows up as multiple usb devices)
+* `Nintendo Switch Pro Controller` (note: it appears we need to send some data
+  to it, otherwise we just get a single report)
 
 ## Use
 
