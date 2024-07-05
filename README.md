@@ -70,7 +70,8 @@ Some controllers, such as
 * `Xbox Wireless Controller (model 1708)` (note: currently doesn't work because
   it shows up as multiple usb devices)
 * `Nintendo Switch Pro Controller` (note: it appears we need to send some data
-  to it, otherwise we just get a single report)
+  to it, otherwise we just get a single report) see [additional
+  information](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/USB-HID-Notes.md#80-04)
 
 ## Use
 
