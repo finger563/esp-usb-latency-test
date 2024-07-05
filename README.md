@@ -73,6 +73,14 @@ Some controllers, such as
   to it, otherwise we just get a single report) see [additional
   information](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/USB-HID-Notes.md#80-04)
 
+⚠️ Right now xbox controllers (elite 2 model 1797 and xbox model 1708) report `No
+HID device at USB port 1`. I believe this is because they show up as multiple
+devices. ⚠️
+
+I believe the warning above is related to these issues:
+* https://github.com/espressif/esp-idf/issues/12667
+* https://github.com/espressif/esp-idf/issues/12554
+
 ## Use
 
 It's recommended to use the

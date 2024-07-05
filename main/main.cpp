@@ -53,7 +53,8 @@ typedef struct {
 static const char *hid_proto_name_str[] = {
   "NONE",
   "KEYBOARD",
-  "MOUSE"
+  "MOUSE",
+  "GAMEPAD",
 };
 
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
@@ -266,6 +267,19 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
   case HID_HOST_DRIVER_EVENT_CONNECTED: {
     logger.info("HID Device, protocol '{}' CONNECTED",
              hid_proto_name_str[dev_params.proto]);
+
+    // get the device info
+    hid_host_dev_info_t dev_info;
+    ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
+    // convert the wchar_t strings to utf-8
+    char manufacturer[128] = { 0 };
+    char product[128] = { 0 };
+    char serial[128] = { 0 };
+    wcstombs(manufacturer, dev_info.iManufacturer, sizeof(manufacturer));
+    wcstombs(product, dev_info.iProduct, sizeof(product));
+    wcstombs(serial, dev_info.iSerialNumber, sizeof(serial));
+    logger.info("  - VID: 0x{:04X}, PID: 0x{:04X}, Manufacturer: '{}', Product: '{}', Serial: '{}'",
+             dev_info.VID, dev_info.PID, manufacturer, product, serial);
 
     const hid_host_device_config_t dev_config = {
       .callback = hid_host_interface_callback,
