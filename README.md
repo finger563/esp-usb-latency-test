@@ -31,15 +31,12 @@ This repository also contains a couple python analysis tools:
 
 1. ESP32S3 dev board - ideally one with USB connectors for both a UART and the
    native USB so that you can gather log data more easily. I recommend the
-   [ESP32-S3-DevKitC-1 v1.0](https://www.adafruit.com/product/5312)
+   [esp32-s3-usb-otg
+   devkit](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-usb-otg/user_guide.html)
+   ([mouser
+   link](https://www.mouser.com/ProductDetail/Espressif-Systems/ESP32-S3-USB-OTG?qs=TCDPyi3sCW2REilQUpYpuw%3D%3D))
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
-3. If you use the DevKitC (as linked above), you'll likely also need some way to
-   convert USB micro-b to C. I recommend [this usb-micro-b to usb-c
-   cable](https://www.amazon.com/Cable-Matters-Micro-Braided-Jacket/dp/B00UUBRX0Y/ref=sr_1_6).
-   That will allow you to plug in a USB-c controller to the USB plug on the
-   dev-kit. You'll then be able to use a standard usb-A to usb-micro-b cable to
-   connect up to the UART port.
    
 For measurement method (1/ADC) above, you'll also need:
 3. Photo-diode for measuring the brightness / light of the screen. I used

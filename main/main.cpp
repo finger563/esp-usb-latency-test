@@ -1,6 +1,8 @@
 #include <chrono>
 #include <thread>
 
+#include <driver/gpio.h>
+
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
 #include "usb/hid_usage_keyboard.h"
@@ -75,6 +77,11 @@ extern "C" void app_main(void) {
   };
 
   logger.info("Bootup");
+
+  // set GPIO12 (dev_vbus_en) high to enable VBUS output to USB device
+  static constexpr auto GPIO_DEV_VBUS_EN = GPIO_NUM_12;
+  gpio_set_direction(GPIO_DEV_VBUS_EN, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_DEV_VBUS_EN, 1);
 
   app_event_queue_t evt_queue;
 
