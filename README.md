@@ -29,10 +29,26 @@ This repository also contains a couple python analysis tools:
 
 ## Hardware Needed
 
-1. ESP32S3 dev board, such as QtPy ESP32S3.
+1. ESP32S3 dev board - ideally one with USB connectors for both a UART and the
+   native USB so that you can gather log data more easily. I recommend the
+   [esp32-s3-usb-otg
+   devkit](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-usb-otg/user_guide.html)
+   ([mouser
+   link](https://www.mouser.com/ProductDetail/Espressif-Systems/ESP32-S3-USB-OTG?qs=TCDPyi3sCW2REilQUpYpuw%3D%3D)).
+   You will need to make sure it can provide VBUS power to the device under
+   test. NOTE: for the `ESP32-S3-USB-OTG` devkit to provide VBUS power, you must
+   plug it into a host, it will pass through the host power to the device.
+   Otherwise you will need to solder on a battery to the devkit and enable the
+   battery power using the on-board switch.
+   * If you decide to use something like a ESP32-S3-DevKitC-1, then you'll need
+     to modify the board (remove / bypass D7) so that the UART USB / VCC-5V can
+     power the USB device port.
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
    
+Test Setup:
+![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
+
 For measurement method (1/ADC) above, you'll also need:
 3. Photo-diode for measuring the brightness / light of the screen. I used
    [Amazon 3mm flat head PhotoDiode](https://www.amazon.com/dp/B07VNSX74J).
@@ -46,10 +62,24 @@ that you can see the ADC values for the screen on/off state based on the screen
 appropriate upper/lower thresholds accordingly to take data.
 
 Some controllers, such as 
-* `Xbox Elite Wireless Controller 2 (model 1797)`
-* `Xbox Wireless Controller (model 1708)`
+* `8BitDo Pro 2` (note: it should be set to `D` compatibility setting)
+* `Backbone One` (USB Receptacle)
 * `Playstation Dualsense (model CFI-SCT1W)`
-* `Nintendo Switch Pro Controller`
+* `Xbox Elite Wireless Controller 2 (model 1797)` (note: currently doesn't work
+  because it shows up as multiple usb devices)
+* `Xbox Wireless Controller (model 1708)` (note: currently doesn't work because
+  it shows up as multiple usb devices)
+* `Nintendo Switch Pro Controller` (note: it appears we need to send some data
+  to it, otherwise we just get a single report) see [additional
+  information](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/USB-HID-Notes.md#80-04)
+
+⚠️ Right now xbox controllers (elite 2 model 1797 and xbox model 1708) report `No
+HID device at USB port 1`. I believe this is because they show up as multiple
+devices. ⚠️
+
+I believe the warning above is related to these issues:
+* https://github.com/espressif/esp-idf/issues/12667
+* https://github.com/espressif/esp-idf/issues/12554
 
 ## Use
 
@@ -154,3 +184,17 @@ idf.py -p PORT flash monitor
 (To exit the serial monitor, type ``Ctrl-]``.)
 
 See the Getting Started Guide for full steps to configure and use ESP-IDF to build 
+
+## Output:
+
+Test Setup:
+![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
+
+Testing multiple controllers:
+![CleanShot 2024-07-05 at 16 13 07](https://github.com/finger563/esp-usb-latency-test/assets/213467/2d874ad8-d968-4a78-8a9a-e8fc028b5e92)
+
+Xbox-Alike:
+![CleanShot 2024-07-05 at 14 31 19](https://github.com/finger563/esp-usb-latency-test/assets/213467/d8f3aef3-4ed2-4c83-b50d-a073672c6dff)
+
+PS5 DualSense:
+![CleanShot 2024-07-05 at 14 33 03](https://github.com/finger563/esp-usb-latency-test/assets/213467/26dea419-55cd-478c-8f5d-a147761a1d53)
