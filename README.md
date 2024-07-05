@@ -40,6 +40,9 @@ This repository also contains a couple python analysis tools:
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
    
+Test Setup:
+![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
+
 For measurement method (1/ADC) above, you'll also need:
 3. Photo-diode for measuring the brightness / light of the screen. I used
    [Amazon 3mm flat head PhotoDiode](https://www.amazon.com/dp/B07VNSX74J).
@@ -161,3 +164,14 @@ idf.py -p PORT flash monitor
 (To exit the serial monitor, type ``Ctrl-]``.)
 
 See the Getting Started Guide for full steps to configure and use ESP-IDF to build 
+
+## Output:
+
+Test Setup:
+![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
+
+Xbox-Alike:
+![CleanShot 2024-07-05 at 14 31 19](https://github.com/finger563/esp-usb-latency-test/assets/213467/d8f3aef3-4ed2-4c83-b50d-a073672c6dff)
+
+PS5 DualSense:
+![CleanShot 2024-07-05 at 14 33 03](https://github.com/finger563/esp-usb-latency-test/assets/213467/26dea419-55cd-478c-8f5d-a147761a1d53)
