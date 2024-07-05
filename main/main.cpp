@@ -15,7 +15,6 @@ using namespace std::chrono_literals;
 
 static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
 
-
 QueueHandle_t app_event_queue = NULL;
 
 /**
@@ -54,9 +53,36 @@ static const char *hid_proto_name_str[] = {
   "NONE",
   "KEYBOARD",
   "MOUSE",
-  "GAMEPAD",
 };
 
+enum class ControllerType {
+  UNKNOWN,
+  SONY,
+  XBOXONE,
+  XBOX360,
+  SWITCH_PRO,
+  BACKBONE,
+  EIGHTBITDO,
+};
+
+// array of report byte indexes for each controller type that should be checked
+// for changes, or -1 if the controller only reports changes. For now we'll
+// enforce that we only check the button bytes, so it cannot be more than 2
+// bytes, or 16 bits.
+static const int report_bytes[][2] = {
+  { 0, 0 }, // UNKNOWN
+  { 0, 0 }, // SONY
+  { 0, 0 }, // XBOXONE
+  { 0, 0 }, // XBOX360
+  { 0, 0 }, // SWITCH_PRO
+  { 0, 0 }, // BACKBONE
+  { 0, 0 }, // EIGHTBITDO
+};
+
+static std::string connected_manufacturer = "";
+static std::string connected_product = "";
+static ControllerType connected_controller_type = ControllerType::UNKNOWN;
+static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
 static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
                                         const hid_host_interface_event_t event,
@@ -190,6 +216,38 @@ extern "C" void app_main(void) {
 }
 
 /**
+ * @brief Check if the report has changed
+ *
+ * @param[in] data    Pointer to input report data buffer
+ * @param[in] length  Length of input report data buffer
+ *
+ * @return true if the report has changed, false otherwise
+ *
+ * @note This function takes as input the input report data buffer and its
+ *       length and uses the connected_controller type to determine if we need
+ *       to check specific bytes of the report to determine change (e.g. if the
+ *       device is constantly sending data) or if simply receiving a report
+ *       means a change was detected. It uses the controller type as an index
+ *       into the report_bytes array to determine which bytes to check (if any).
+ */
+static bool check_report_changed(const uint8_t *const data, const int length) {
+  int raw_controller_type = static_cast<int>(connected_controller_type);
+  if (raw_controller_type < 0 || raw_controller_type >= sizeof(report_bytes) / sizeof(report_bytes[0])) {
+    return true;
+  }
+  int byte_0 = report_bytes[raw_controller_type][0];
+  int byte_1 = report_bytes[raw_controller_type][1];
+  if (byte_0 == -1 || byte_1 == -1) {
+    return true;
+  }
+  static uint16_t last_button_state = 0;
+  uint16_t button_state = (data[byte_1] << 8) | data[byte_0];
+  bool changed = button_state != last_button_state;
+  last_button_state = button_state;
+  return changed;
+}
+
+/**
  * @brief USB HID Host Generic Interface report callback handler
  *
  * 'generic' means anything else than mouse or keyboard
@@ -207,6 +265,9 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
     printf("%02X", data[i]);
   }
   putchar('\r');
+  if (check_report_changed(data, length)) {
+    logger.info("Report changed");
+  }
 }
 
 /**
@@ -236,6 +297,9 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
   case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
     logger.info("HID Device, protocol '{}' DISCONNECTED",
              hid_proto_name_str[dev_params.proto]);
+    connected_manufacturer = "";
+    connected_product = "";
+    connected_controller_type = ControllerType::UNKNOWN;
     ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
     break;
   case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
@@ -280,6 +344,22 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     wcstombs(serial, dev_info.iSerialNumber, sizeof(serial));
     logger.info("  - VID: 0x{:04X}, PID: 0x{:04X}, Manufacturer: '{}', Product: '{}', Serial: '{}'",
              dev_info.VID, dev_info.PID, manufacturer, product, serial);
+    connected_manufacturer = manufacturer;
+    connected_product = product;
+    if (connected_manufacturer.contains("Sony")) {
+      connected_controller_type = ControllerType::SONY;
+    } else if (connected_manufacturer.contains("Microsoft")) {
+      // TODO: properly handle 360 vs One controllers
+      connected_controller_type = ControllerType::XBOXONE;
+    } else if (connected_manufacturer.contains("Nintendo")) {
+      if (connected_product == "Pro Controller") {
+        connected_controller_type = ControllerType::SWITCH_PRO;
+      }
+    } else if (connected_manufacturer.contains("Backbone")) {
+      connected_controller_type = ControllerType::BACKBONE;
+    } else if (connected_manufacturer.contains("8BitDo")) {
+      connected_controller_type = ControllerType::EIGHTBITDO;
+    }
 
     const hid_host_device_config_t dev_config = {
       .callback = hid_host_interface_callback,
