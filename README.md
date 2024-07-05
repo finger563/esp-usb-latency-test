@@ -40,6 +40,9 @@ This repository also contains a couple python analysis tools:
    plug it into a host, it will pass through the host power to the device.
    Otherwise you will need to solder on a battery to the devkit and enable the
    battery power using the on-board switch.
+   * If you decide to use something like a ESP32-S3-DevKitC-1, then you'll need
+     to modify the board (remove / bypass D7) so that the UART USB / VCC-5V can
+     power the USB device port.
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
    
