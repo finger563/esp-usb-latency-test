@@ -71,12 +71,12 @@ enum class ControllerType {
 // bytes, or 16 bits.
 static const int report_bytes[][2] = {
   { 0, 0 }, // UNKNOWN
-  { 0, 0 }, // SONY
+  { 8, 9 }, // SONY
   { 0, 0 }, // XBOXONE
   { 0, 0 }, // XBOX360
   { 0, 0 }, // SWITCH_PRO
-  { 0, 0 }, // BACKBONE
-  { 0, 0 }, // EIGHTBITDO
+  { 12, 13 }, // BACKBONE
+  { 8, 9 }, // EIGHTBITDO; NOTE: use 'D' compatibility setting
 };
 
 static std::string connected_manufacturer = "";
