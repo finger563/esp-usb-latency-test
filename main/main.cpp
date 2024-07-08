@@ -43,7 +43,7 @@ static const int report_bytes[][2] = {
 // for libfmt printing of gpio_num_t
 template <> struct fmt::formatter<gpio_num_t> : fmt::formatter<std::string> {
   template <typename FormatContext> auto format(gpio_num_t t, FormatContext &ctx) const {
-    return fmt::format_to(ctx.out(), "GPIO_NUM_{}", (int)t + 1);
+    return fmt::format_to(ctx.out(), "GPIO_NUM_{}", (int)t);
   }
 };
 
