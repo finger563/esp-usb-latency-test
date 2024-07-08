@@ -185,14 +185,9 @@ See the Getting Started Guide for full steps to configure and use ESP-IDF to bui
 
 ## Output:
 
-Test Setup:
-![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
+Note: In this screenshot I have not wired up the USB-OTG devkit to the
+controllers, I'm simply plugging and unplugging the controllers via usb and then
+pressing buttons manually.
 
-Testing multiple controllers:
-![CleanShot 2024-07-05 at 16 13 07](https://github.com/finger563/esp-usb-latency-test/assets/213467/2d874ad8-d968-4a78-8a9a-e8fc028b5e92)
-
-Xbox-Alike:
-![CleanShot 2024-07-05 at 14 31 19](https://github.com/finger563/esp-usb-latency-test/assets/213467/d8f3aef3-4ed2-4c83-b50d-a073672c6dff)
-
-PS5 DualSense:
-![CleanShot 2024-07-05 at 14 33 03](https://github.com/finger563/esp-usb-latency-test/assets/213467/26dea419-55cd-478c-8f5d-a147761a1d53)
+![CleanShot 2024-07-08 at 10 55
+42](https://github.com/finger563/esp-usb-latency-test/assets/213467/554bf27f-e216-47a6-b160-bd11d0ef842a)
