@@ -67,6 +67,7 @@ static TaskHandle_t hid_task_handle_ = NULL;
 static int shift = 0;
 
 // what device is connected
+static std::atomic<bool> connected = false;
 static std::string connected_manufacturer = "";
 static std::string connected_product = "";
 static std::atomic<ControllerType> connected_controller_type = ControllerType::UNKNOWN;
@@ -181,7 +182,7 @@ extern "C" void app_main(void) {
           // wait for a HID device to be connected
           logger.info("Waiting for HID Device to be connected");
           // Wait queue
-          while (connected_controller_type == ControllerType::UNKNOWN) {
+          while (!connected) {
             std::this_thread::sleep_for(1s);
           }
 
@@ -190,7 +191,7 @@ extern "C" void app_main(void) {
           fmt::print("% time (s), latency (ms)\n");
 
           // loop until the device is disconnected
-          while (connected_controller_type != ControllerType::UNKNOWN) {
+          while (connected) {
             // reset the state at the beginning of the loop
             shift = (rand() % MAX_SHIFT_MS) * 1000;
             button_press_start = 0;
@@ -333,6 +334,7 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
     connected_manufacturer = "";
     connected_product = "";
     connected_controller_type = ControllerType::UNKNOWN;
+    connected = false;
     ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
     break;
   case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
@@ -362,6 +364,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
   case HID_HOST_DRIVER_EVENT_CONNECTED: {
     logger.info("HID Device CONNECTED");
 
+    connected = true;
     // get the device info
     hid_host_dev_info_t dev_info;
     ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
