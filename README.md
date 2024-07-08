@@ -19,10 +19,15 @@ This repository also contains a couple python analysis tools:
 **Table of Contents**
 
 - [Esp-Usb-Latency-Test](#esp-usb-latency-test)
-    - [Development](#development)
+    - [Hardware Needed](#hardware-needed)
+    - [Use](#use)
+        - [Real-time Plotting](#real-time-plotting)
+        - [Analysis](#analysis)
+            - [Setup](#setup)
+            - [Running](#running)
     - [Cloning](#cloning)
     - [Build and Flash](#build-and-flash)
-    - [Output](#output)
+    - [Output:](#output)
 
 <!-- markdown-toc end -->
 
