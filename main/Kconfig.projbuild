@@ -1,0 +1,31 @@
+menu "Latency Test Configuration"
+    config BUTTON_HOLD_TIME_MS
+        int "Button hold time (ms)"
+        default 100
+        range 10 1000
+        help
+            The time in milliseconds for which the button is held down.
+
+    config MAX_BUTTON_DELAY_MS
+        int "Maximum button delay (ms)"
+        default 100
+        range 0 1000
+        help
+            The maximum delay / shift in milliseconds between when the button is
+            released and when the next button press is triggered.
+
+    config BUTTON_PRESS_LEVEL
+        int "Level which indicates a button press"
+        default 0
+        range 0 1
+        help
+            The level which indicates a button press.
+
+    config BUTTON_GPIO
+        int "Button GPIO"
+        default 45 if IDF_TARGET_ESP32S3
+        help
+            The GPIO pin number for the button. Should be one of the free pins
+            on the board.
+
+endmenu

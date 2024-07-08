@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <thread>
 
@@ -13,47 +14,7 @@
 
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
-
-QueueHandle_t app_event_queue = NULL;
-
-/**
- * @brief APP event group
- *
- * Application logic can be different. There is a one among other ways to distingiush the
- * event by application event group.
- * In this example we have two event groups:
- * APP_EVENT            - General event, which is APP_QUIT_PIN press event (Generally, it is IO0).
- * APP_EVENT_HID_HOST   - HID Host Driver event, such as device connection/disconnection or input report.
- */
-typedef enum {
-  APP_EVENT = 0,
-  APP_EVENT_HID_HOST
-} app_event_group_t;
-
-/**
- * @brief APP event queue
- *
- * This event is used for delivering the HID Host event from callback to a task.
- */
-typedef struct {
-  app_event_group_t event_group;
-  /* HID Host - Device related info */
-  struct {
-    hid_host_device_handle_t handle;
-    hid_host_driver_event_t event;
-    void *arg;
-  } hid_host_device;
-} app_event_queue_t;
-
-/**
- * @brief HID Protocol string names
- */
-static const char *hid_proto_name_str[] = {
-  "NONE",
-  "KEYBOARD",
-  "MOUSE",
-};
+static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::INFO});
 
 enum class ControllerType {
   UNKNOWN,
@@ -62,7 +23,7 @@ enum class ControllerType {
   XBOX360,
   SWITCH_PRO,
   BACKBONE,
-  EIGHTBITDO,
+  EIGHTBITDO, // NOTE: use 'D' compatibility setting
 };
 
 // array of report byte indexes for each controller type that should be checked
@@ -79,9 +40,53 @@ static const int report_bytes[][2] = {
   { 8, 9 }, // EIGHTBITDO; NOTE: use 'D' compatibility setting
 };
 
+// for libfmt printing of gpio_num_t
+template <> struct fmt::formatter<gpio_num_t> : fmt::formatter<std::string> {
+  template <typename FormatContext> auto format(gpio_num_t t, FormatContext &ctx) const {
+    return fmt::format_to(ctx.out(), "GPIO_NUM_{}", (int)t + 1);
+  }
+};
+
+// button pin configuration
+static constexpr gpio_num_t button_pin = (gpio_num_t)CONFIG_BUTTON_GPIO;
+static int BUTTON_PRESSED_LEVEL = 1;
+static int BUTTON_RELEASED_LEVEL = !BUTTON_PRESSED_LEVEL;
+
+// button press/release timing configuration
+static uint64_t button_press_start = 0;
+static uint64_t button_release_start = 0;
+static uint64_t latency_us = 0;
+static constexpr uint64_t IDLE_US = 50 * 1000; // time between button presses
+static constexpr uint64_t HOLD_TIME_US = CONFIG_BUTTON_HOLD_TIME_MS * 1000;
+static constexpr uint64_t MAX_SHIFT_MS = CONFIG_MAX_BUTTON_DELAY_MS;
+
+// used for notifying the HID task to check the latency
+static TaskHandle_t hid_task_handle_ = NULL;
+
+// randomly shift the button press time within the 1s period
+static int shift = 0;
+
+// what device is connected
 static std::string connected_manufacturer = "";
 static std::string connected_product = "";
-static ControllerType connected_controller_type = ControllerType::UNKNOWN;
+static std::atomic<ControllerType> connected_controller_type = ControllerType::UNKNOWN;
+
+// HID signaling events for the callback functions
+QueueHandle_t app_event_queue = NULL;
+typedef enum {
+  APP_EVENT_HID_HOST = 0
+} app_event_group_t;
+typedef struct {
+  app_event_group_t event_group;
+  /* HID Host - Device related info */
+  struct {
+    hid_host_device_handle_t handle;
+    hid_host_driver_event_t event;
+    void *arg;
+  } hid_host_device;
+} app_event_queue_t;
+
+// HID Host Device callback functions
 static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
 static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
@@ -95,7 +100,7 @@ static void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
                                      void *arg);
 static void usb_lib_task(void *arg);
 
-
+// main code
 extern "C" void app_main(void) {
   static auto start = std::chrono::high_resolution_clock::now();
   static auto elapsed = [&]() {
@@ -104,6 +109,10 @@ extern "C" void app_main(void) {
   };
 
   logger.info("Bootup");
+
+  logger.info("Setting up button GPIO: {}", button_pin);
+  gpio_set_direction(button_pin, GPIO_MODE_OUTPUT);
+  gpio_set_level(button_pin, BUTTON_RELEASED_LEVEL);
 
   // set GPIO18 (USB_SEL) to high to enable USB Host (receptacle) mode. Default
   // is low (USB device)
@@ -162,24 +171,74 @@ extern "C" void app_main(void) {
   // Create queue
   app_event_queue = xQueueCreate(10, sizeof(app_event_queue_t));
 
-  logger.info("Waiting for HID Device to be connected");
+  // make a task to handle HID events
+  espp::Task hid_task({
+      .name = "HID Task",
+        .callback = [&](auto &m, auto &cv) -> bool {
+          // set the task handle
+          hid_task_handle_ = xTaskGetCurrentTaskHandle();
 
-  while (1) {
-    // Wait queue
+          // wait for a HID device to be connected
+          logger.info("Waiting for HID Device to be connected");
+          // Wait queue
+          while (connected_controller_type == ControllerType::UNKNOWN) {
+            std::this_thread::sleep_for(1s);
+          }
+
+          // device is connected, start the latency test
+          logger.info("Starting latency test");
+          fmt::print("% time (s), latency (ms)\n");
+
+          // loop until the device is disconnected
+          while (connected_controller_type != ControllerType::UNKNOWN) {
+            // reset the state at the beginning of the loop
+            shift = (rand() % MAX_SHIFT_MS) * 1000;
+            button_press_start = 0;
+            button_release_start = 0;
+            static constexpr uint64_t MAX_LATENCY_MS = 200;
+
+            // wait for (IDLE_US + shift) microseconds
+            std::this_thread::sleep_for(std::chrono::microseconds(IDLE_US + shift));
+
+            // trigger a button press
+            button_press_start = esp_timer_get_time();
+            gpio_set_level(button_pin, BUTTON_PRESSED_LEVEL);
+
+            // wait for up to 500ms for the button press to be detected
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MAX_LATENCY_MS));
+            latency_us = esp_timer_get_time() - button_press_start;
+
+            // log the latency
+            fmt::print("{:.3f}, {:.3f}\n", elapsed(), latency_us / 1e3f);
+
+            // latency reached, release the button after hold time
+            std::this_thread::sleep_for(std::chrono::microseconds(HOLD_TIME_US - latency_us));
+
+            // release the button
+            button_release_start = esp_timer_get_time();
+            gpio_set_level(button_pin, BUTTON_RELEASED_LEVEL);
+
+            // wait for up to 500ms for the button release to be detected
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MAX_LATENCY_MS));
+            latency_us = esp_timer_get_time() - button_release_start;
+
+            // log the latency
+            fmt::print("{:.3f}, {:.3f}\n", elapsed(), latency_us / 1e3f);
+          }
+          logger.info("HID Device disconnected");
+
+        // we don't want to stop the task, so return false
+        return false;
+      },
+        .stack_size_bytes = 8192,
+        .priority = 10,
+        .core_id = 0,
+        });
+  hid_task.start();
+  // hid_task_handle_ = xTaskGetCurrentTaskHandle();
+
+  while (true) {
     if (xQueueReceive(app_event_queue, &evt_queue, portMAX_DELAY)) {
-      if (APP_EVENT == evt_queue.event_group) {
-        // User pressed button
-        usb_host_lib_info_t lib_info;
-        ESP_ERROR_CHECK(usb_host_lib_info(&lib_info));
-        if (lib_info.num_devices == 0) {
-          // End while cycle
-          break;
-        } else {
-          logger.warn("To shutdown example, remove all USB devices and press button again.");
-          // Keep polling
-        }
-      }
-
       if (APP_EVENT_HID_HOST ==  evt_queue.event_group) {
         hid_host_device_event(evt_queue.hid_host_device.handle,
                               evt_queue.hid_host_device.event,
@@ -188,31 +247,11 @@ extern "C" void app_main(void) {
     }
   }
 
+  // we should never reach this point
   logger.info("HID Driver uninstall");
   ESP_ERROR_CHECK(hid_host_uninstall());
   xQueueReset(app_event_queue);
   vQueueDelete(app_event_queue);
-
-
-  // make a simple task that prints "Hello World!" every second
-  espp::Task task({
-      .name = "Hello World",
-      .callback = [&](auto &m, auto &cv) -> bool {
-        logger.debug("[{:.3f}] Hello from the task!", elapsed());
-        std::unique_lock<std::mutex> lock(m);
-        cv.wait_for(lock, 1s);
-        // we don't want to stop the task, so return false
-        return false;
-      },
-      .stack_size_bytes = 4096,
-    });
-  task.start();
-
-  // also print in the main thread
-  while (true) {
-    logger.debug("[{:.3f}] Hello World!", elapsed());
-    std::this_thread::sleep_for(1s);
-  }
 }
 
 /**
@@ -231,7 +270,7 @@ extern "C" void app_main(void) {
  *       into the report_bytes array to determine which bytes to check (if any).
  */
 static bool check_report_changed(const uint8_t *const data, const int length) {
-  int raw_controller_type = static_cast<int>(connected_controller_type);
+  int raw_controller_type = static_cast<int>(connected_controller_type.load());
   if (raw_controller_type < 0 || raw_controller_type >= sizeof(report_bytes) / sizeof(report_bytes[0])) {
     return true;
   }
@@ -257,16 +296,11 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
  */
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
 {
-  uint64_t time = esp_timer_get_time();
-  uint64_t seconds = time / 1e6f;
-  uint64_t milliseconds = (time % 1000000) / 1e3f;
-  fmt::print("[{}.{:03}] Generic report: ", seconds, milliseconds);
-  for (int i = 0; i < length; i++) {
-    printf("%02X", data[i]);
-  }
-  putchar('\r');
   if (check_report_changed(data, length)) {
-    logger.info("Report changed");
+    // convert to std::vector<uint8_t> for logging
+    std::vector<uint8_t> report(data, data + length);
+    logger.debug("Report changed: {::#02x}", report);
+    if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
   }
 }
 
@@ -295,20 +329,17 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
     hid_host_generic_report_callback(data, data_length);
     break;
   case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
-    logger.info("HID Device, protocol '{}' DISCONNECTED",
-             hid_proto_name_str[dev_params.proto]);
+    logger.info("HID Device DISCONNECTED");
     connected_manufacturer = "";
     connected_product = "";
     connected_controller_type = ControllerType::UNKNOWN;
     ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
     break;
   case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
-    logger.info("HID Device, protocol '{}' TRANSFER_ERROR",
-             hid_proto_name_str[dev_params.proto]);
+    logger.info("HID Device TRANSFER_ERROR");
     break;
   default:
-    logger.error("HID Device, protocol '{}' Unhandled event",
-             hid_proto_name_str[dev_params.proto]);
+    logger.error("HID Device Unhandled event");
     break;
   }
 }
@@ -329,8 +360,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 
   switch (event) {
   case HID_HOST_DRIVER_EVENT_CONNECTED: {
-    logger.info("HID Device, protocol '{}' CONNECTED",
-             hid_proto_name_str[dev_params.proto]);
+    logger.info("HID Device CONNECTED");
 
     // get the device info
     hid_host_dev_info_t dev_info;
