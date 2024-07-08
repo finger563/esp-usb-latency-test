@@ -49,7 +49,7 @@ This repository also contains a couple python analysis tools:
 You'll need to wire up to the IO45 and GND pads in the free IO pads section of
 the USB-OTG dev board:
 
-
+![CleanShot 2024-07-08 at 15 51 07](https://github.com/finger563/esp-usb-latency-test/assets/213467/8317f67c-5a1d-46f9-bc5e-cd94c75f05be)
    
 Test Setup:
 ![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
