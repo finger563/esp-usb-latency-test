@@ -47,6 +47,30 @@ template <> struct fmt::formatter<gpio_num_t> : fmt::formatter<std::string> {
   }
 };
 
+// for libfmt printing of ControllerType
+template <> struct fmt::formatter<ControllerType> : fmt::formatter<std::string> {
+  template <typename FormatContext> auto format(ControllerType t, FormatContext &ctx) const {
+    switch (t) {
+    case ControllerType::UNKNOWN:
+      return fmt::format_to(ctx.out(), "UNKNOWN");
+    case ControllerType::SONY:
+      return fmt::format_to(ctx.out(), "Sony");
+    case ControllerType::XBOXONE:
+      return fmt::format_to(ctx.out(), "Xbox One");
+    case ControllerType::XBOX360:
+      return fmt::format_to(ctx.out(), "Xbox 360");
+    case ControllerType::SWITCH_PRO:
+      return fmt::format_to(ctx.out(), "Nintendo Switch Pro");
+    case ControllerType::BACKBONE:
+      return fmt::format_to(ctx.out(), "Backbone");
+    case ControllerType::EIGHTBITDO:
+      return fmt::format_to(ctx.out(), "8BitDo");
+    default:
+      return fmt::format_to(ctx.out(), "UNKNOWN");
+    }
+  }
+};
+
 // button pin configuration
 static constexpr gpio_num_t button_pin = (gpio_num_t)CONFIG_BUTTON_GPIO;
 static int BUTTON_PRESSED_LEVEL = 1;
@@ -88,6 +112,7 @@ typedef struct {
 } app_event_queue_t;
 
 // HID Host Device callback functions
+static uint16_t last_button_state = 0;
 static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
 static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
@@ -186,6 +211,9 @@ extern "C" void app_main(void) {
             std::this_thread::sleep_for(1s);
           }
 
+          // wait for the first notify (since the button data may have changed)
+          ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+
           // device is connected, start the latency test
           logger.info("Starting latency test");
           fmt::print("% time (s), latency (ms)\n");
@@ -280,7 +308,6 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
   if (byte_0 == -1 || byte_1 == -1) {
     return true;
   }
-  static uint16_t last_button_state = 0;
   uint16_t button_state = (data[byte_1] << 8) | data[byte_0];
   bool changed = button_state != last_button_state;
   last_button_state = button_state;
@@ -365,6 +392,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     logger.info("HID Device CONNECTED");
 
     connected = true;
+    last_button_state = 0;
     // get the device info
     hid_host_dev_info_t dev_info;
     ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
@@ -393,6 +421,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     } else if (connected_manufacturer.contains("8BitDo")) {
       connected_controller_type = ControllerType::EIGHTBITDO;
     }
+    logger.info("  - Controller Type: {}", connected_controller_type.load());
 
     const hid_host_device_config_t dev_config = {
       .callback = hid_host_interface_callback,
