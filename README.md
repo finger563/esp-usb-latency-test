@@ -1,13 +1,12 @@
 # Esp-Usb-Latency-Test
 
-Code for performing end-to-end latency test for inputs. Can be configured in two ways:
-1. ADC Measurement for end to end with a phone: actuate the button, then use a
-   photo-diode/photo-transistor to measure when the screen changes and computes
-   the time it took.
-2. Hosted measurement for end to end with the ESP: actuate the button, then
-   measure the time it takes to receive the updated input report.
+Code for performing latency test over USB for gamepad inputs. It performs hosted
+measurement for end to end with the ESP which involves: actuate the button, then
+measure the time it takes to receive the updated input report.
 
-See also [esp-latency-test](https://github.com/finger563/esp-latency-test)
+See also [esp-latency-test](https://github.com/finger563/esp-latency-test) for
+end-to-end (with phone) latency testing using a photodiode or for doing BT / BLE
+hosted latency testing.
 
 This repository also contains a couple python analysis tools:
 * [`analysis.py`](./analysis.py) can be used to plot a histogram of latency
@@ -29,37 +28,31 @@ This repository also contains a couple python analysis tools:
 
 ## Hardware Needed
 
-1. ESP32S3 dev board - ideally one with USB connectors for both a UART and the
-   native USB so that you can gather log data more easily. I recommend the
-   [esp32-s3-usb-otg
+1. ESP32S3 dev board - I recommend [esp32-s3-usb-otg
    devkit](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-usb-otg/user_guide.html)
    ([mouser
    link](https://www.mouser.com/ProductDetail/Espressif-Systems/ESP32-S3-USB-OTG?qs=TCDPyi3sCW2REilQUpYpuw%3D%3D)).
-   You will need to make sure it can provide VBUS power to the device under
-   test. NOTE: for the `ESP32-S3-USB-OTG` devkit to provide VBUS power, you must
-   plug it into a host, it will pass through the host power to the device.
-   Otherwise you will need to solder on a battery to the devkit and enable the
-   battery power using the on-board switch.
+   If you choose to go with a different dev-board, you will need to make sure it
+   can provide VBUS power to the device under test. NOTE: for the
+   `ESP32-S3-USB-OTG` devkit to provide VBUS power, you must plug it into a
+   host, it will pass through the host power to the device. Otherwise you will
+   need to solder on a battery to the devkit and enable the battery power using
+   the on-board switch.
    * If you decide to use something like a ESP32-S3-DevKitC-1, then you'll need
      to modify the board (remove / bypass D7) so that the UART USB / VCC-5V can
      power the USB device port.
+   * :warning: You'll need to modify the code if you use any board other than
+     the one listed above! :warning:
 2. Dupont wires to connect to button on controller (patch into button and gnd
    signal).
    
+You'll need to wire up to the IO45 and GND pads in the free IO pads section of
+the USB-OTG dev board:
+
+
+   
 Test Setup:
 ![image](https://github.com/finger563/esp-usb-latency-test/assets/213467/ea2a5b83-1ef8-4884-be31-db12847c7a41)
-
-For measurement method (1/ADC) above, you'll also need:
-3. Photo-diode for measuring the brightness / light of the screen. I used
-   [Amazon 3mm flat head PhotoDiode](https://www.amazon.com/dp/B07VNSX74J).
-4. Resistor (1k-10k) from photodiode output to ground.
-
-If you're planning to run method (1/ADC) above, you'll likely need to run the
-embedded code once with `CONFIG_DEBUG_PLOT_ALL` enabled (via menuconfig), so
-that you can see the ADC values for the screen on/off state based on the screen
-/ app / sensor you select and how you've mounted them. I use duct tape to
-"mount" the sensor to my phone screen :sweat_smile:. Then you can configure the
-appropriate upper/lower thresholds accordingly to take data.
 
 Some controllers, such as 
 * `8BitDo Pro 2` (note: it should be set to `D` compatibility setting)
