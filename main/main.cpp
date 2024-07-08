@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <thread>
 
@@ -13,30 +14,93 @@
 
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
+static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::INFO});
 
+enum class ControllerType {
+  UNKNOWN,
+  SONY,
+  XBOXONE,
+  XBOX360,
+  SWITCH_PRO,
+  BACKBONE,
+  EIGHTBITDO, // NOTE: use 'D' compatibility setting
+};
 
+// array of report byte indexes for each controller type that should be checked
+// for changes, or -1 if the controller only reports changes. For now we'll
+// enforce that we only check the button bytes, so it cannot be more than 2
+// bytes, or 16 bits.
+static const int report_bytes[][2] = {
+  { 0, 0 }, // UNKNOWN
+  { 8, 9 }, // SONY
+  { 0, 0 }, // XBOXONE
+  { 0, 0 }, // XBOX360
+  { 0, 0 }, // SWITCH_PRO
+  { 12, 13 }, // BACKBONE
+  { 8, 9 }, // EIGHTBITDO; NOTE: use 'D' compatibility setting
+};
+
+// for libfmt printing of gpio_num_t
+template <> struct fmt::formatter<gpio_num_t> : fmt::formatter<std::string> {
+  template <typename FormatContext> auto format(gpio_num_t t, FormatContext &ctx) const {
+    return fmt::format_to(ctx.out(), "GPIO_NUM_{}", (int)t);
+  }
+};
+
+// for libfmt printing of ControllerType
+template <> struct fmt::formatter<ControllerType> : fmt::formatter<std::string> {
+  template <typename FormatContext> auto format(ControllerType t, FormatContext &ctx) const {
+    switch (t) {
+    case ControllerType::UNKNOWN:
+      return fmt::format_to(ctx.out(), "UNKNOWN");
+    case ControllerType::SONY:
+      return fmt::format_to(ctx.out(), "Sony");
+    case ControllerType::XBOXONE:
+      return fmt::format_to(ctx.out(), "Xbox One");
+    case ControllerType::XBOX360:
+      return fmt::format_to(ctx.out(), "Xbox 360");
+    case ControllerType::SWITCH_PRO:
+      return fmt::format_to(ctx.out(), "Nintendo Switch Pro");
+    case ControllerType::BACKBONE:
+      return fmt::format_to(ctx.out(), "Backbone");
+    case ControllerType::EIGHTBITDO:
+      return fmt::format_to(ctx.out(), "8BitDo");
+    default:
+      return fmt::format_to(ctx.out(), "UNKNOWN");
+    }
+  }
+};
+
+// button pin configuration
+static constexpr gpio_num_t button_pin = (gpio_num_t)CONFIG_BUTTON_GPIO;
+static int BUTTON_PRESSED_LEVEL = 1;
+static int BUTTON_RELEASED_LEVEL = !BUTTON_PRESSED_LEVEL;
+
+// button press/release timing configuration
+static uint64_t button_press_start = 0;
+static uint64_t button_release_start = 0;
+static uint64_t latency_us = 0;
+static constexpr uint64_t IDLE_US = 50 * 1000; // time between button presses
+static constexpr uint64_t HOLD_TIME_US = CONFIG_BUTTON_HOLD_TIME_MS * 1000;
+static constexpr uint64_t MAX_SHIFT_MS = CONFIG_MAX_BUTTON_DELAY_MS;
+
+// used for notifying the HID task to check the latency
+static TaskHandle_t hid_task_handle_ = NULL;
+
+// randomly shift the button press time within the 1s period
+static int shift = 0;
+
+// what device is connected
+static std::atomic<bool> connected = false;
+static std::string connected_manufacturer = "";
+static std::string connected_product = "";
+static std::atomic<ControllerType> connected_controller_type = ControllerType::UNKNOWN;
+
+// HID signaling events for the callback functions
 QueueHandle_t app_event_queue = NULL;
-
-/**
- * @brief APP event group
- *
- * Application logic can be different. There is a one among other ways to distingiush the
- * event by application event group.
- * In this example we have two event groups:
- * APP_EVENT            - General event, which is APP_QUIT_PIN press event (Generally, it is IO0).
- * APP_EVENT_HID_HOST   - HID Host Driver event, such as device connection/disconnection or input report.
- */
 typedef enum {
-  APP_EVENT = 0,
-  APP_EVENT_HID_HOST
+  APP_EVENT_HID_HOST = 0
 } app_event_group_t;
-
-/**
- * @brief APP event queue
- *
- * This event is used for delivering the HID Host event from callback to a task.
- */
 typedef struct {
   app_event_group_t event_group;
   /* HID Host - Device related info */
@@ -47,16 +111,9 @@ typedef struct {
   } hid_host_device;
 } app_event_queue_t;
 
-/**
- * @brief HID Protocol string names
- */
-static const char *hid_proto_name_str[] = {
-  "NONE",
-  "KEYBOARD",
-  "MOUSE",
-  "GAMEPAD",
-};
-
+// HID Host Device callback functions
+static uint16_t last_button_state = 0;
+static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
 static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
                                         const hid_host_interface_event_t event,
@@ -69,7 +126,7 @@ static void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
                                      void *arg);
 static void usb_lib_task(void *arg);
 
-
+// main code
 extern "C" void app_main(void) {
   static auto start = std::chrono::high_resolution_clock::now();
   static auto elapsed = [&]() {
@@ -78,6 +135,10 @@ extern "C" void app_main(void) {
   };
 
   logger.info("Bootup");
+
+  logger.info("Setting up button GPIO: {}", button_pin);
+  gpio_set_direction(button_pin, GPIO_MODE_OUTPUT);
+  gpio_set_level(button_pin, BUTTON_RELEASED_LEVEL);
 
   // set GPIO18 (USB_SEL) to high to enable USB Host (receptacle) mode. Default
   // is low (USB device)
@@ -136,24 +197,77 @@ extern "C" void app_main(void) {
   // Create queue
   app_event_queue = xQueueCreate(10, sizeof(app_event_queue_t));
 
-  logger.info("Waiting for HID Device to be connected");
+  // make a task to handle HID events
+  espp::Task hid_task({
+      .name = "HID Task",
+        .callback = [&](auto &m, auto &cv) -> bool {
+          // set the task handle
+          hid_task_handle_ = xTaskGetCurrentTaskHandle();
 
-  while (1) {
-    // Wait queue
+          // wait for a HID device to be connected
+          logger.info("Waiting for HID Device to be connected");
+          // Wait queue
+          while (!connected) {
+            std::this_thread::sleep_for(1s);
+          }
+
+          // wait for the first notify (since the button data may have changed)
+          ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+
+          // device is connected, start the latency test
+          logger.info("Starting latency test");
+          fmt::print("% time (s), latency (ms)\n");
+
+          // loop until the device is disconnected
+          while (connected) {
+            // reset the state at the beginning of the loop
+            shift = (rand() % MAX_SHIFT_MS) * 1000;
+            button_press_start = 0;
+            button_release_start = 0;
+            static constexpr uint64_t MAX_LATENCY_MS = 200;
+
+            // wait for (IDLE_US + shift) microseconds
+            std::this_thread::sleep_for(std::chrono::microseconds(IDLE_US + shift));
+
+            // trigger a button press
+            button_press_start = esp_timer_get_time();
+            gpio_set_level(button_pin, BUTTON_PRESSED_LEVEL);
+
+            // wait for up to 500ms for the button press to be detected
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MAX_LATENCY_MS));
+            latency_us = esp_timer_get_time() - button_press_start;
+
+            // log the latency
+            fmt::print("{:.3f}, {:.3f}\n", elapsed(), latency_us / 1e3f);
+
+            // latency reached, release the button after hold time
+            std::this_thread::sleep_for(std::chrono::microseconds(HOLD_TIME_US - latency_us));
+
+            // release the button
+            button_release_start = esp_timer_get_time();
+            gpio_set_level(button_pin, BUTTON_RELEASED_LEVEL);
+
+            // wait for up to 500ms for the button release to be detected
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MAX_LATENCY_MS));
+            latency_us = esp_timer_get_time() - button_release_start;
+
+            // log the latency
+            fmt::print("{:.3f}, {:.3f}\n", elapsed(), latency_us / 1e3f);
+          }
+          logger.info("HID Device disconnected");
+
+        // we don't want to stop the task, so return false
+        return false;
+      },
+        .stack_size_bytes = 8192,
+        .priority = 10,
+        .core_id = 0,
+        });
+  hid_task.start();
+  // hid_task_handle_ = xTaskGetCurrentTaskHandle();
+
+  while (true) {
     if (xQueueReceive(app_event_queue, &evt_queue, portMAX_DELAY)) {
-      if (APP_EVENT == evt_queue.event_group) {
-        // User pressed button
-        usb_host_lib_info_t lib_info;
-        ESP_ERROR_CHECK(usb_host_lib_info(&lib_info));
-        if (lib_info.num_devices == 0) {
-          // End while cycle
-          break;
-        } else {
-          logger.warn("To shutdown example, remove all USB devices and press button again.");
-          // Keep polling
-        }
-      }
-
       if (APP_EVENT_HID_HOST ==  evt_queue.event_group) {
         hid_host_device_event(evt_queue.hid_host_device.handle,
                               evt_queue.hid_host_device.event,
@@ -162,31 +276,42 @@ extern "C" void app_main(void) {
     }
   }
 
+  // we should never reach this point
   logger.info("HID Driver uninstall");
   ESP_ERROR_CHECK(hid_host_uninstall());
   xQueueReset(app_event_queue);
   vQueueDelete(app_event_queue);
+}
 
-
-  // make a simple task that prints "Hello World!" every second
-  espp::Task task({
-      .name = "Hello World",
-      .callback = [&](auto &m, auto &cv) -> bool {
-        logger.debug("[{:.3f}] Hello from the task!", elapsed());
-        std::unique_lock<std::mutex> lock(m);
-        cv.wait_for(lock, 1s);
-        // we don't want to stop the task, so return false
-        return false;
-      },
-      .stack_size_bytes = 4096,
-    });
-  task.start();
-
-  // also print in the main thread
-  while (true) {
-    logger.debug("[{:.3f}] Hello World!", elapsed());
-    std::this_thread::sleep_for(1s);
+/**
+ * @brief Check if the report has changed
+ *
+ * @param[in] data    Pointer to input report data buffer
+ * @param[in] length  Length of input report data buffer
+ *
+ * @return true if the report has changed, false otherwise
+ *
+ * @note This function takes as input the input report data buffer and its
+ *       length and uses the connected_controller type to determine if we need
+ *       to check specific bytes of the report to determine change (e.g. if the
+ *       device is constantly sending data) or if simply receiving a report
+ *       means a change was detected. It uses the controller type as an index
+ *       into the report_bytes array to determine which bytes to check (if any).
+ */
+static bool check_report_changed(const uint8_t *const data, const int length) {
+  int raw_controller_type = static_cast<int>(connected_controller_type.load());
+  if (raw_controller_type < 0 || raw_controller_type >= sizeof(report_bytes) / sizeof(report_bytes[0])) {
+    return true;
   }
+  int byte_0 = report_bytes[raw_controller_type][0];
+  int byte_1 = report_bytes[raw_controller_type][1];
+  if (byte_0 == -1 || byte_1 == -1) {
+    return true;
+  }
+  uint16_t button_state = (data[byte_1] << 8) | data[byte_0];
+  bool changed = button_state != last_button_state;
+  last_button_state = button_state;
+  return changed;
 }
 
 /**
@@ -199,14 +324,12 @@ extern "C" void app_main(void) {
  */
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
 {
-  uint64_t time = esp_timer_get_time();
-  uint64_t seconds = time / 1e6f;
-  uint64_t milliseconds = (time % 1000000) / 1e3f;
-  fmt::print("[{}.{:03}] Generic report: ", seconds, milliseconds);
-  for (int i = 0; i < length; i++) {
-    printf("%02X", data[i]);
+  if (check_report_changed(data, length)) {
+    // convert to std::vector<uint8_t> for logging
+    std::vector<uint8_t> report(data, data + length);
+    logger.debug("Report changed: {::#02x}", report);
+    if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
   }
-  putchar('\r');
 }
 
 /**
@@ -234,17 +357,18 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
     hid_host_generic_report_callback(data, data_length);
     break;
   case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
-    logger.info("HID Device, protocol '{}' DISCONNECTED",
-             hid_proto_name_str[dev_params.proto]);
+    logger.info("HID Device DISCONNECTED");
+    connected_manufacturer = "";
+    connected_product = "";
+    connected_controller_type = ControllerType::UNKNOWN;
+    connected = false;
     ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
     break;
   case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
-    logger.info("HID Device, protocol '{}' TRANSFER_ERROR",
-             hid_proto_name_str[dev_params.proto]);
+    logger.info("HID Device TRANSFER_ERROR");
     break;
   default:
-    logger.error("HID Device, protocol '{}' Unhandled event",
-             hid_proto_name_str[dev_params.proto]);
+    logger.error("HID Device Unhandled event");
     break;
   }
 }
@@ -265,9 +389,10 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 
   switch (event) {
   case HID_HOST_DRIVER_EVENT_CONNECTED: {
-    logger.info("HID Device, protocol '{}' CONNECTED",
-             hid_proto_name_str[dev_params.proto]);
+    logger.info("HID Device CONNECTED");
 
+    connected = true;
+    last_button_state = 0;
     // get the device info
     hid_host_dev_info_t dev_info;
     ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
@@ -280,6 +405,23 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     wcstombs(serial, dev_info.iSerialNumber, sizeof(serial));
     logger.info("  - VID: 0x{:04X}, PID: 0x{:04X}, Manufacturer: '{}', Product: '{}', Serial: '{}'",
              dev_info.VID, dev_info.PID, manufacturer, product, serial);
+    connected_manufacturer = manufacturer;
+    connected_product = product;
+    if (connected_manufacturer.contains("Sony")) {
+      connected_controller_type = ControllerType::SONY;
+    } else if (connected_manufacturer.contains("Microsoft")) {
+      // TODO: properly handle 360 vs One controllers
+      connected_controller_type = ControllerType::XBOXONE;
+    } else if (connected_manufacturer.contains("Nintendo")) {
+      if (connected_product == "Pro Controller") {
+        connected_controller_type = ControllerType::SWITCH_PRO;
+      }
+    } else if (connected_manufacturer.contains("Backbone")) {
+      connected_controller_type = ControllerType::BACKBONE;
+    } else if (connected_manufacturer.contains("8BitDo")) {
+      connected_controller_type = ControllerType::EIGHTBITDO;
+    }
+    logger.info("  - Controller Type: {}", connected_controller_type.load());
 
     const hid_host_device_config_t dev_config = {
       .callback = hid_host_interface_callback,
