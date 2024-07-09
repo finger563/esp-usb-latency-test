@@ -14,7 +14,7 @@
 
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::INFO});
+static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
 
 enum class ControllerType {
   UNKNOWN,
@@ -327,7 +327,7 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
   if (check_report_changed(data, length)) {
     // convert to std::vector<uint8_t> for logging
     std::vector<uint8_t> report(data, data + length);
-    logger.debug("Report changed: {::#02x}", report);
+    logger.debug("Report changed[{}]: {::#02x}", report.size(), report);
     if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
   }
 }
@@ -436,6 +436,72 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
       }
     }
     ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
+
+    if (connected_controller_type == ControllerType::SWITCH_PRO) {
+      // get the report descriptor and print it out for debugging
+      size_t report_descriptor_length = 0;
+      uint8_t *desc = hid_host_get_report_descriptor(hid_device_handle,
+                                                     &report_descriptor_length);
+      std::vector<uint8_t> report_descriptor(desc, desc + report_descriptor_length);
+      logger.debug("Report Descriptor: {::#02x}", report_descriptor);
+
+      // true/false are wait for ack
+
+      // found https://github.com/ttsuki/ProControllerHid/tree/develop
+
+      // handshake: (usb command, starts with 0x80)
+      // - send 0x02, {}, true, handshake
+      // - send 0x03, {}, true, set baudrate to 3Mbps
+      // - send 0x02, {}, true, handshake
+      // - send 0x04, {}, false, hid-only mode, turn off bluetooth
+
+      // configure features: (subcommand, starts with 0x01, has packet counter (&0xf), always has rumble data, then sub command and data)
+      // - 0x03, {0x30}, true, set input report mode
+      // - 0x40, {0x01/0x00}, true, enable/disable imu data
+      // - 0x48, {0x01}, true, enable vibration
+      // - 0x38, {0x2F, 0x10, 0x11, 0x33, 0x33}, true, set home light animation
+      // - 0x30, {led_data}, true, set player led status
+
+      static constexpr uint8_t handshake[] = {0x80, 0x02};
+      static constexpr uint8_t set_baudrate[] = {0x80, 0x03};
+      static constexpr uint8_t hid_only_mode[] = {0x80, 0x04};
+
+      static constexpr uint8_t set_input_report_mode[] = {0x01, 0x03, 0x30};
+
+      // use the hid_class_request_set_report(dev_handle, report_type,
+      // report_id, report, report_length) to send the 0x80 0x04 keep it from
+      // timing out. It's one of the output reports in the report descriptor.
+      // the report descriptor has 4 output reports: 0x03, 0x04, 0x05, 0x06
+      static constexpr uint8_t report_ids[] = {0x03, 0x04, 0x05, 0x06};
+      for (auto report_id : report_ids) {
+
+        // send the handshake
+        ESP_ERROR_CHECK(hid_class_request_set_report(hid_device_handle,
+                                                     HID_REPORT_TYPE_OUTPUT,
+                                                     report_id,
+                                                     const_cast<uint8_t*>(handshake),
+                                                     sizeof(handshake)));
+        // send the set baudrate
+        ESP_ERROR_CHECK(hid_class_request_set_report(hid_device_handle,
+                                                     HID_REPORT_TYPE_OUTPUT,
+                                                     report_id,
+                                                     const_cast<uint8_t*>(set_baudrate),
+                                                     sizeof(set_baudrate)));
+        // send the handshake
+        ESP_ERROR_CHECK(hid_class_request_set_report(hid_device_handle,
+                                                     HID_REPORT_TYPE_OUTPUT,
+                                                     report_id,
+                                                     const_cast<uint8_t*>(handshake),
+                                                     sizeof(handshake)));
+        // send the hid only mode
+        ESP_ERROR_CHECK(hid_class_request_set_report(hid_device_handle,
+                                                     HID_REPORT_TYPE_OUTPUT,
+                                                     report_id,
+                                                     const_cast<uint8_t*>(hid_only_mode),
+                                                     sizeof(hid_only_mode)));
+      }
+    }
+
   } break;
   default:
     break;
