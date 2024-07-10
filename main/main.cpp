@@ -12,9 +12,65 @@
 #include "logger.hpp"
 #include "task.hpp"
 
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/queue.h>
+#include <sys/param.h>
+#include "esp_log.h"
+#include "esp_check.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "usb/usb_host.h"
+
+#include "usb/hid_host.h"
+
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::INFO});
+extern "C" {
+  typedef struct hid_host_device {
+    STAILQ_ENTRY(hid_host_device) tailq_entry;  /**< HID device queue */
+    SemaphoreHandle_t device_busy;              /**< HID device main mutex */
+    SemaphoreHandle_t ctrl_xfer_done;           /**< Control transfer semaphore */
+    usb_transfer_t *ctrl_xfer;                  /**< Pointer to control transfer buffer */
+    usb_device_handle_t dev_hdl;                /**< USB device handle */
+    uint8_t dev_addr;                           /**< USB devce address */
+  } hid_device_t;
+
+  typedef enum {
+    HID_INTERFACE_STATE_NOT_INITIALIZED = 0x00, /**< HID Interface not initialized */
+    HID_INTERFACE_STATE_IDLE,                   /**< HID Interface has been found in connected USB device */
+    HID_INTERFACE_STATE_READY,                  /**< HID Interface opened and ready to start transfer */
+    HID_INTERFACE_STATE_ACTIVE,                 /**< HID Interface is in use */
+    HID_INTERFACE_STATE_WAIT_USER_DELETION,     /**< HID Interface wait user to be removed */
+    HID_INTERFACE_STATE_MAX
+  } hid_iface_state_t;
+
+  typedef struct hid_interface {
+    STAILQ_ENTRY(hid_interface) tailq_entry;
+    hid_device_t *parent;                   /**< Parent USB HID device */
+    hid_host_dev_params_t dev_params;       /**< USB device parameters */
+    uint8_t ep_in;                          /**< Interrupt IN EP number */
+    uint16_t ep_in_mps;                     /**< Interrupt IN max size */
+    uint8_t country_code;                   /**< Country code */
+    uint16_t report_desc_size;              /**< Size of Report */
+    uint8_t *report_desc;                   /**< Pointer to HID Report */
+    usb_transfer_t *in_xfer;                /**< Pointer to IN transfer buffer */
+    hid_host_interface_event_cb_t user_cb;  /**< Interface application callback */
+    void *user_cb_arg;                      /**< Interface application callback arg */
+    hid_iface_state_t state;                /**< Interface state */
+  } hid_iface_t;
+}
+
+extern "C" esp_err_t hid_control_transfer(hid_device_t *hid_device, size_t len, uint32_t timeout_ms);
+extern "C" hid_iface_t *get_iface_by_handle(hid_host_device_handle_t hid_dev_handle);
+extern "C" esp_err_t hid_device_try_lock(hid_device_t *hid_device, uint32_t timeout_ms);
+extern "C" void hid_device_unlock(hid_device_t *hid_device);
+
+static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
 
 enum class ControllerType {
   UNKNOWN,
@@ -327,7 +383,7 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
   if (check_report_changed(data, length)) {
     // convert to std::vector<uint8_t> for logging
     std::vector<uint8_t> report(data, data + length);
-    logger.debug("Report changed: {::#02x}", report);
+    logger.debug("Report changed[{}]: {::#02x}", report.size(), report);
     if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
   }
 }
@@ -436,6 +492,89 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
       }
     }
     ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
+
+    if (connected_controller_type == ControllerType::SWITCH_PRO) {
+      // get the report descriptor and print it out for debugging
+      size_t report_descriptor_length = 0;
+      uint8_t *desc = hid_host_get_report_descriptor(hid_device_handle,
+                                                     &report_descriptor_length);
+      std::vector<uint8_t> report_descriptor(desc, desc + report_descriptor_length);
+      logger.debug("Report Descriptor: {::#02x}", report_descriptor);
+
+      // true/false are wait for ack
+
+      // found https://github.com/ttsuki/ProControllerHid/tree/develop
+
+      // handshake: (usb command, starts with 0x80)
+      // - send 0x02, {}, true, handshake
+      // - send 0x03, {}, true, set baudrate to 3Mbps
+      // - send 0x02, {}, true, handshake
+      // - send 0x04, {}, false, hid-only mode, turn off bluetooth
+
+      // configure features: (subcommand, starts with 0x01, has packet counter (&0xf), always has rumble data, then sub command and data)
+      // - 0x03, {0x30}, true, set input report mode
+      // - 0x40, {0x01/0x00}, true, enable/disable imu data
+      // - 0x48, {0x01}, true, enable vibration
+      // - 0x38, {0x2F, 0x10, 0x11, 0x33, 0x33}, true, set home light animation
+      // - 0x30, {led_data}, true, set player led status
+
+      static constexpr uint8_t handshake[] = {0x02};
+      static constexpr uint8_t set_baudrate[] = {0x03};
+      static constexpr uint8_t hid_only_mode[] = {0x04};
+
+      static constexpr uint8_t set_input_report_mode[] = {0x01, 0x03, 0x30};
+
+      // set the hid_device_handle->ctrl_xfer struct (type usb_transfer_t) to
+      // contain the data. Copy into it's data_buffer
+
+      auto lock_err = hid_device_try_lock(hid_device_handle->parent, 5000);
+      if (lock_err != ESP_OK) {
+        logger.error("Failed to lock HID device: {}", esp_err_to_name(lock_err));
+        return;
+      }
+
+      usb_transfer_t *ctrl_xfer = hid_device_handle->parent->ctrl_xfer;
+      usb_setup_packet_t *setup = (usb_setup_packet_t *)ctrl_xfer->data_buffer;
+      hid_iface_t *iface = get_iface_by_handle(hid_device_handle);
+
+      // setup->bmRequestType = USB_BM_REQUEST_TYPE_DIR_IN |
+      //   USB_BM_REQUEST_TYPE_TYPE_STANDARD |
+      //   USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
+      setup->bmRequestType = USB_BM_REQUEST_TYPE_DIR_OUT |
+        USB_BM_REQUEST_TYPE_TYPE_CLASS |
+        USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
+
+      setup->bRequest = USB_B_REQUEST_SET_FEATURE; // could be USB_B_REQUEST_SET_CONFIGURATION
+      setup->wValue = 0; // TODO: ?
+      setup->wIndex = iface->dev_params.iface_num;
+
+      // send the handshake
+      logger.info("Sending handshake");
+      setup->wLength = sizeof(handshake);
+      memcpy(ctrl_xfer->data_buffer + USB_SETUP_PACKET_SIZE, handshake, sizeof(handshake));
+      ESP_ERROR_CHECK(hid_control_transfer(hid_device_handle->parent, USB_SETUP_PACKET_SIZE + sizeof(handshake), 5000));
+
+      // send the set baudrate
+      logger.info("Switching to 3Mbps baudrate");
+      setup->wLength = sizeof(set_baudrate);
+      memcpy(ctrl_xfer->data_buffer + USB_SETUP_PACKET_SIZE, set_baudrate, sizeof(set_baudrate));
+      ESP_ERROR_CHECK(hid_control_transfer(hid_device_handle->parent, USB_SETUP_PACKET_SIZE + sizeof(set_baudrate), 5000));
+
+      // send the handshake
+      logger.info("Switching to HID only mode");
+      setup->wLength = sizeof(handshake);
+      memcpy(ctrl_xfer->data_buffer + USB_SETUP_PACKET_SIZE, handshake, sizeof(handshake));
+      ESP_ERROR_CHECK(hid_control_transfer(hid_device_handle->parent, USB_SETUP_PACKET_SIZE + sizeof(handshake), 5000));
+
+      // send the hid only mode
+      logger.info("Switching to HID only mode");
+      setup->wLength = sizeof(hid_only_mode);
+      memcpy(ctrl_xfer->data_buffer + USB_SETUP_PACKET_SIZE, hid_only_mode, sizeof(hid_only_mode));
+      ESP_ERROR_CHECK(hid_control_transfer(hid_device_handle->parent, USB_SETUP_PACKET_SIZE + sizeof(hid_only_mode), 5000));
+
+      hid_device_unlock(hid_device_handle->parent);
+    }
+
   } break;
   default:
     break;
