@@ -27,15 +27,16 @@ enum class ControllerType {
 };
 
 // array of report byte indexes for each controller type that should be checked
-// for changes, or -1 if the controller only reports changes. For now we'll
-// enforce that we only check the button bytes, so it cannot be more than 2
-// bytes, or 16 bits.
+// for changes, or -1 if the controller only reports changes. Can be any number
+// of bytes, but the first byte should be the first byte of the report that
+// should be checked. The second byte should be the last byte of the report that
+// should be checked. All bytes between the two will be checked for changes.
 static const int report_bytes[][2] = {
-  { 0, 0 }, // UNKNOWN
+  { -1, -1 }, // UNKNOWN
   { 8, 9 }, // SONY
-  { 0, 0 }, // XBOXONE
-  { 0, 0 }, // XBOX360
-  { 3, 4 }, // SWITCH_PRO
+  { -1, -1 }, // XBOXONE
+  { -1, -1 }, // XBOX360
+  { 3, 5 }, // SWITCH_PRO
   { 12, 13 }, // BACKBONE
   { 8, 9 }, // EIGHTBITDO; NOTE: use 'D' compatibility setting
 };
@@ -112,7 +113,7 @@ typedef struct {
 } app_event_queue_t;
 
 // HID Host Device callback functions
-static uint16_t last_button_state = 0;
+static std::vector<uint8_t> last_report_data;
 static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
 static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
@@ -326,15 +327,26 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
   if (raw_controller_type < 0 || raw_controller_type >= sizeof(report_bytes) / sizeof(report_bytes[0])) {
     return true;
   }
-  int byte_0 = report_bytes[raw_controller_type][0];
-  int byte_1 = report_bytes[raw_controller_type][1];
-  if (byte_0 == -1 || byte_1 == -1) {
+  int start_byte = report_bytes[raw_controller_type][0];
+  int end_byte = report_bytes[raw_controller_type][1];
+  if (start_byte == -1 || end_byte == -1) {
     return true;
   }
-  uint16_t button_state = (data[byte_1] << 8) | data[byte_0];
-  bool changed = button_state != last_button_state;
-  last_button_state = button_state;
-  return changed;
+  // copy the relevant bytes from the report into a vector
+  std::vector<uint8_t> report(&data[start_byte], &data[end_byte + 1]);
+  if (last_report_data.size() != report.size()) {
+    last_report_data = report;
+    return true;
+  }
+  // compare the bytes
+  for (size_t i = 0; i < report.size(); i++) {
+    if (report[i] != last_report_data[i]) {
+      last_report_data = report;
+      return true;
+    }
+  }
+  last_report_data = report;
+  return false;
 }
 
 // found https://github.com/ttsuki/ProControllerHid/tree/develop
@@ -483,7 +495,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     logger.info("HID Device CONNECTED");
 
     connected = true;
-    last_button_state = 0;
+    last_report_data.clear();
     // get the device info
     hid_host_dev_info_t dev_info;
     ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
