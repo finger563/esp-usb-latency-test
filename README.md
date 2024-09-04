@@ -65,9 +65,9 @@ Some controllers, such as
 * `Playstation Dualsense (model CFI-SCT1W)`
 * `Nintendo Switch Pro Controller`
 * `Xbox Elite Wireless Controller 2 (model 1797)` (note: currently doesn't work
-  because it shows up as multiple usb devices)
+  because it uses GIP instead of HID)
 * `Xbox Wireless Controller (model 1708)` (note: currently doesn't work because
-  it shows up as multiple usb devices)
+  it uses GIP insetad of HID)
 
 ⚠️ Right now xbox controllers (elite 2 model 1797 and xbox model 1708) report `No
 HID device at USB port 1`. See
