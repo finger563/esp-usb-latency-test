@@ -2,29 +2,28 @@
 #include <chrono>
 #include <thread>
 
-#include <driver/gpio.h>
-
-#include "usb/usb_host.h"
-#include "usb/hid_host.h"
-#include "usb/hid_usage_keyboard.h"
-#include "usb/hid_usage_mouse.h"
-
-#include "logger.hpp"
-#include "task.hpp"
-
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/queue.h>
 #include <sys/param.h>
+
+#include <driver/gpio.h>
 #include <esp_log.h>
 #include <esp_check.h>
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
+
 #include <usb/usb_host.h>
+#include <usb/hid_host.h>
+#include <usb/hid_usage_keyboard.h>
+#include <usb/hid_usage_mouse.h>
+
+#include "logger.hpp"
+#include "task.hpp"
 
 using namespace std::chrono_literals;
 
@@ -423,10 +422,9 @@ void configure_switch_pro() {
  */
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
 {
-  // convert to std::vector<uint8_t> for logging
-  std::vector<uint8_t> report(data, data + length);
-  // logger.debug("Report received[{}]: {::#02x}", report.size(), report);
   if (check_report_changed(data, length)) {
+    // convert to std::vector<uint8_t> for logging
+    std::vector<uint8_t> report(data, data + length);
     logger.debug("Report changed[{}]: {::#02x}", report.size(), report);
     if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
   }
