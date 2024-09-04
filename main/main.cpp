@@ -4,10 +4,10 @@
 
 #include <driver/gpio.h>
 
-#include "usb/usb_host.h"
-#include "usb/hid_host.h"
-#include "usb/hid_usage_keyboard.h"
-#include "usb/hid_usage_mouse.h"
+#include <usb/usb_host.h>
+#include <usb/hid_host.h>
+#include <usb/hid_usage_keyboard.h>
+#include <usb/hid_usage_mouse.h>
 
 #include "logger.hpp"
 #include "task.hpp"
@@ -27,15 +27,16 @@ enum class ControllerType {
 };
 
 // array of report byte indexes for each controller type that should be checked
-// for changes, or -1 if the controller only reports changes. For now we'll
-// enforce that we only check the button bytes, so it cannot be more than 2
-// bytes, or 16 bits.
+// for changes, or -1 if the controller only reports changes. Can be any number
+// of bytes, but the first byte should be the first byte of the report that
+// should be checked. The second byte should be the last byte of the report that
+// should be checked. All bytes between the two will be checked for changes.
 static const int report_bytes[][2] = {
-  { 0, 0 }, // UNKNOWN
+  { -1, -1 }, // UNKNOWN
   { 8, 9 }, // SONY
-  { 0, 0 }, // XBOXONE
-  { 0, 0 }, // XBOX360
-  { 0, 0 }, // SWITCH_PRO
+  { -1, -1 }, // XBOXONE
+  { -1, -1 }, // XBOX360
+  { 3, 5 }, // SWITCH_PRO
   { 12, 13 }, // BACKBONE
   { 8, 9 }, // EIGHTBITDO; NOTE: use 'D' compatibility setting
 };
@@ -112,7 +113,7 @@ typedef struct {
 } app_event_queue_t;
 
 // HID Host Device callback functions
-static uint16_t last_button_state = 0;
+static std::vector<uint8_t> last_report_data;
 static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
 static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
@@ -125,6 +126,19 @@ static void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
                                      const hid_host_driver_event_t event,
                                      void *arg);
 static void usb_lib_task(void *arg);
+
+enum class SwitchProState : uint8_t {
+  DISCONNECTED = 0x00,
+  CONNECTED,
+  HANDSHAKE_1,
+  SET_BAUDRATE,
+  HANDSHAKE_2,
+  HID_ONLY_MODE,
+  READY,
+};
+static SwitchProState switch_pro_state = SwitchProState::DISCONNECTED;
+static hid_host_device_handle_t switch_pro_handle = NULL;
+static void configure_switch_pro();
 
 // main code
 extern "C" void app_main(void) {
@@ -213,6 +227,16 @@ extern "C" void app_main(void) {
 
           // wait for the first notify (since the button data may have changed)
           ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+
+          if (switch_pro_handle != NULL) {
+            while (switch_pro_state != SwitchProState::READY) {
+              logger.info("Configuring Switch Pro Controller...");
+              logger.move_up();
+              logger.clear_line();
+              configure_switch_pro();
+              std::this_thread::sleep_for(1s);
+            }
+          }
 
           // device is connected, start the latency test
           logger.info("Starting latency test");
@@ -303,15 +327,94 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
   if (raw_controller_type < 0 || raw_controller_type >= sizeof(report_bytes) / sizeof(report_bytes[0])) {
     return true;
   }
-  int byte_0 = report_bytes[raw_controller_type][0];
-  int byte_1 = report_bytes[raw_controller_type][1];
-  if (byte_0 == -1 || byte_1 == -1) {
+  int start_byte = report_bytes[raw_controller_type][0];
+  int end_byte = report_bytes[raw_controller_type][1];
+  if (start_byte == -1 || end_byte == -1) {
     return true;
   }
-  uint16_t button_state = (data[byte_1] << 8) | data[byte_0];
-  bool changed = button_state != last_button_state;
-  last_button_state = button_state;
-  return changed;
+  int num_bytes = end_byte - start_byte + 1;
+  // use static so that the vector is not reallocated every time
+  static std::vector<uint8_t> report;
+  report.reserve(num_bytes);
+  // copy the relevant bytes from the report into a vector
+  report.assign(data + start_byte, data + end_byte + 1);
+  // if the report size has changed, then the report has changed
+  if (last_report_data.size() != report.size()) {
+    last_report_data = report;
+    return true;
+  }
+  // compare the bytes
+  for (size_t i = 0; i < report.size(); i++) {
+    if (report[i] != last_report_data[i]) {
+      last_report_data = report;
+      return true;
+    }
+  }
+  // no change
+  last_report_data = report;
+  return false;
+}
+
+// found https://github.com/ttsuki/ProControllerHid/tree/develop
+
+// handshake: (usb command, starts with 0x80)
+// - send {0x80, 0x02}, {}, true, handshake
+// - send {0x80, 0x03}, {}, true, set baudrate to 3Mbps
+// - send {0x80, 0x04}, {}, false, hid-only mode, turn off bluetooth
+
+// configure features: (subcommand, starts with 0x01, has packet counter (&0xf), always has rumble data, then sub command and data)
+// - 0x03, {0x30}, true, set input report mode
+// - 0x40, {0x01/0x00}, true, enable/disable imu data
+// - 0x48, {0x01}, true, enable vibration
+// - 0x38, {0x2F, 0x10, 0x11, 0x33, 0x33}, true, set home light animation
+// - 0x30, {led_data}, true, set player led status
+
+static constexpr uint8_t handshake[] = {0x80, 0x02};
+static constexpr uint8_t set_baudrate[] = {0x80, 0x03};
+static constexpr uint8_t hid_only_mode[] = {0x80, 0x04};
+
+static constexpr uint8_t set_input_report_mode[] = {0x01, 0x03, 0x30};
+
+// send the packets over the hid interface to the controller
+static constexpr uint8_t report_type = 0x50; // 0x50 for Switch Pro Controller
+static constexpr uint8_t report_id = 0x01; // 0x01 for Switch Pro Controller
+
+void configure_switch_pro() {
+  switch (switch_pro_state) {
+    case SwitchProState::DISCONNECTED:
+      // do nothing
+      break;
+    case SwitchProState::CONNECTED:
+      // send the handshake
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(handshake), sizeof(handshake)));
+      switch_pro_state = SwitchProState::HANDSHAKE_1;
+      break;
+    case SwitchProState::HANDSHAKE_1:
+      // send the set baudrate
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(set_baudrate), sizeof(set_baudrate)));
+      switch_pro_state = SwitchProState::SET_BAUDRATE;
+      break;
+    case SwitchProState::SET_BAUDRATE:
+      switch_pro_state = SwitchProState::HANDSHAKE_2;
+      // send the handshake
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(handshake), sizeof(handshake)));
+      break;
+    case SwitchProState::HANDSHAKE_2:
+      // send the hid only mode
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(hid_only_mode), sizeof(hid_only_mode)));
+      switch_pro_state = SwitchProState::HID_ONLY_MODE;
+      break;
+    case SwitchProState::HID_ONLY_MODE:
+      // now we're ready to use the controller
+      switch_pro_state = SwitchProState::READY;
+      logger.info("Switch Pro Controller configured");
+      break;
+    case SwitchProState::READY:
+      // do nothing
+      break;
+  default:
+    break;
+  }
 }
 
 /**
@@ -327,7 +430,7 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
   if (check_report_changed(data, length)) {
     // convert to std::vector<uint8_t> for logging
     std::vector<uint8_t> report(data, data + length);
-    logger.debug("Report changed: {::#02x}", report);
+    logger.debug("Report changed[{}]: {::#02x}", report.size(), report);
     if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
   }
 }
@@ -348,6 +451,10 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
   hid_host_dev_params_t dev_params;
   ESP_ERROR_CHECK(hid_host_device_get_params(hid_device_handle, &dev_params));
 
+  if (connected_controller_type == ControllerType::SWITCH_PRO) {
+    switch_pro_handle = hid_device_handle;
+  }
+
   switch (event) {
   case HID_HOST_INTERFACE_EVENT_INPUT_REPORT:
     ESP_ERROR_CHECK(hid_host_device_get_raw_input_report_data(hid_device_handle,
@@ -362,6 +469,8 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
     connected_product = "";
     connected_controller_type = ControllerType::UNKNOWN;
     connected = false;
+    switch_pro_state = SwitchProState::DISCONNECTED;
+    switch_pro_handle = NULL;
     ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
     break;
   case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
@@ -392,7 +501,7 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     logger.info("HID Device CONNECTED");
 
     connected = true;
-    last_button_state = 0;
+    last_report_data.clear();
     // get the device info
     hid_host_dev_info_t dev_info;
     ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
@@ -436,6 +545,20 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
       }
     }
     ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
+
+    if (connected_controller_type == ControllerType::SWITCH_PRO) {
+      switch_pro_state = SwitchProState::CONNECTED;
+      // get the report descriptor and print it out for debugging
+      size_t report_descriptor_length = 0;
+      uint8_t *desc = hid_host_get_report_descriptor(hid_device_handle,
+                                                     &report_descriptor_length);
+      std::vector<uint8_t> report_descriptor(desc, desc + report_descriptor_length);
+      logger.debug("Report Descriptor: {::#02x}", report_descriptor);
+
+      switch_pro_handle = hid_device_handle;
+      configure_switch_pro();
+    }
+
   } break;
   default:
     break;
