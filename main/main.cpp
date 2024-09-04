@@ -332,8 +332,13 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
   if (start_byte == -1 || end_byte == -1) {
     return true;
   }
+  int num_bytes = end_byte - start_byte + 1;
+  // use static so that the vector is not reallocated every time
+  static std::vector<uint8_t> report;
+  report.reserve(num_bytes);
   // copy the relevant bytes from the report into a vector
-  std::vector<uint8_t> report(&data[start_byte], &data[end_byte + 1]);
+  report.assign(data + start_byte, data + end_byte + 1);
+  // if the report size has changed, then the report has changed
   if (last_report_data.size() != report.size()) {
     last_report_data = report;
     return true;
