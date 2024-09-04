@@ -14,7 +14,7 @@
 
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
+static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::INFO});
 
 enum class ControllerType {
   UNKNOWN,
