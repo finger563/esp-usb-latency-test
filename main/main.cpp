@@ -433,7 +433,7 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
 /**
  * @brief USB HID Host interface callback
  *
- * @param[in] switch_pro_handle  HID Device handle
+ * @param[in] hid_device_handle  HID Device handle
  * @param[in] event              HID Host interface event
  * @param[in] arg                Pointer to arguments, does not used
  */
