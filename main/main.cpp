@@ -2,20 +2,7 @@
 #include <chrono>
 #include <thread>
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/queue.h>
-#include <sys/param.h>
-
 #include <driver/gpio.h>
-#include <esp_log.h>
-#include <esp_check.h>
-
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/semphr.h>
 
 #include <usb/usb_host.h>
 #include <usb/hid_host.h>
