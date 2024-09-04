@@ -350,6 +350,7 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
       return true;
     }
   }
+  // no change
   last_report_data = report;
   return false;
 }
