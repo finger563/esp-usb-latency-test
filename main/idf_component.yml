@@ -1,4 +1,6 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  idf: ">=4.4"
-  usb_host_hid: "^1.0.1"
+  idf: '>=4.4'
+  usb_host_hid: ^1.0.1
+  espp/task: '>=1.0'
+  espp/timer: '>=1.0'
