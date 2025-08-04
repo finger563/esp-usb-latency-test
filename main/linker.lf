@@ -1,0 +1,27 @@
+# Move timing critical USB functionality into IRAM
+[mapping:usb]
+archive: libusb.a
+entries:
+    * (noflash_text)
+
+[mapping:usb_host_hid]
+archive: libespressif__usb_host_hid.a
+entries:
+    * (noflash_text)
+
+[mapping:task]
+archive: libespp__task.a
+entries:
+    * (noflash_text)
+
+[mapping:main]
+archive: libmain.a
+entries:
+    * (noflash_text)
+
+# For GDMA handling functions into IRAM
+[mapping:GDMA]
+archive: libesp_hw_support.a
+entries:
+    esp_dma_utils (noflash_text)
+    gdma (noflash_text)
