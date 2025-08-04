@@ -272,6 +272,7 @@ extern "C" void app_main(void) {
           }
 
           gpio_set_level(button_pin, BUTTON_RELEASED_LEVEL);
+          ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
 
           // device is connected, start the latency test
           logger.info("Starting latency test");
@@ -286,6 +287,8 @@ extern "C" void app_main(void) {
             button_press_start = 0;
             button_release_start = 0;
             static constexpr uint64_t MAX_LATENCY_MS = 200;
+
+            logger.debug("Waiting for {} microseconds before button press", IDLE_US + shift);
 
             // wait for (IDLE_US + shift) microseconds
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((IDLE_US + shift) / 1000));
@@ -304,6 +307,8 @@ extern "C" void app_main(void) {
             } else {
               num_missed_inputs++;
             }
+
+            logger.debug("Button pressed for {} microseconds", HOLD_TIME_US);
 
             // latency reached, release the button after hold time
             std::this_thread::sleep_for(std::chrono::microseconds(HOLD_TIME_US - latency_us));
