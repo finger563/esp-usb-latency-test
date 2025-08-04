@@ -14,7 +14,7 @@
 
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::INFO});
+static espp::Logger logger({.tag = "esp-usb-latency-test", .level = espp::Logger::Verbosity::DEBUG});
 
 enum class ControllerType {
   UNKNOWN,
@@ -36,9 +36,21 @@ static const int report_bytes[][2] = {
   { 8, 9 }, // SONY
   { -1, -1 }, // XBOXONE
   { -1, -1 }, // XBOX360
-  { 3, 5 }, // SWITCH_PRO
-  { 12, 13 }, // BACKBONE
+  // { 3, 5 }, // SWITCH_PRO
+  { -1, -1 }, // SWITCH_PRO
+  // { 12, 13 }, // BACKBONE
+  { -1, -1 }, // BACKBONE
   { 8, 9 }, // EIGHTBITDO; NOTE: use 'D' compatibility setting
+};
+
+static const int input_report_id[] = {
+  -1, // UNKNOWN - don't care
+  0x01, // SONY
+  0x01, // XBOXONE
+  0x01, // XBOX360
+  -1, // SWITCH_PRO
+  0x01, // BACKBONE
+  -1, // EIGHTBITDO; NOTE: use 'D' compatibility setting
 };
 
 // for libfmt printing of gpio_num_t
@@ -74,7 +86,7 @@ template <> struct fmt::formatter<ControllerType> : fmt::formatter<std::string> 
 
 // button pin configuration
 static constexpr gpio_num_t button_pin = (gpio_num_t)CONFIG_BUTTON_GPIO;
-static int BUTTON_PRESSED_LEVEL = 1;
+static int BUTTON_PRESSED_LEVEL = CONFIG_BUTTON_PRESS_LEVEL;
 static int BUTTON_RELEASED_LEVEL = !BUTTON_PRESSED_LEVEL;
 
 // button press/release timing configuration
@@ -116,20 +128,21 @@ typedef struct {
 static std::vector<uint8_t> last_report_data;
 static bool check_report_changed(const uint8_t *const data, const int length);
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length);
-static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
-                                        const hid_host_interface_event_t event,
-                                        void *arg);
-static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
-                                  const hid_host_driver_event_t event,
-                                  void *arg);
-static void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
-                                     const hid_host_driver_event_t event,
-                                     void *arg);
+static void hid_host_interface_event_callback(hid_host_device_handle_t hid_device_handle,
+                                              const hid_host_interface_event_t event,
+                                              void *arg);
+static void hid_host_driver_event_callback(hid_host_device_handle_t hid_device_handle,
+                                           const hid_host_driver_event_t event,
+                                           void *arg);
+static void handle_hid_host_device_event(hid_host_device_handle_t hid_device_handle,
+                                           const hid_host_driver_event_t event,
+                                           void *arg);
 static void usb_lib_task(void *arg);
 
 enum class SwitchProState : uint8_t {
   DISCONNECTED = 0x00,
   CONNECTED,
+  DEVICE_INFO,
   HANDSHAKE_1,
   SET_BAUDRATE,
   HANDSHAKE_2,
@@ -186,7 +199,7 @@ extern "C" void app_main(void) {
                                          "usb_events",
                                          4096,
                                          xTaskGetCurrentTaskHandle(),
-                                         2, NULL, 0);
+                                         20, NULL, 0);
   assert(task_created == pdTRUE);
 
   // Wait for notification from usb_lib_task to proceed
@@ -197,12 +210,12 @@ extern "C" void app_main(void) {
    * - create background task for handling low level event inside the HID driver
    * - provide the device callback to get new HID Device connection event
    */
-  const hid_host_driver_config_t hid_host_driver_config = {
+  static const hid_host_driver_config_t hid_host_driver_config = {
     .create_background_task = true,
-    .task_priority = 5,
+    .task_priority = 10,
     .stack_size = 4096,
-    .core_id = 0,
-    .callback = hid_host_device_callback,
+    .core_id = 1,
+    .callback = hid_host_driver_event_callback,
     .callback_arg = NULL
   };
 
@@ -213,7 +226,6 @@ extern "C" void app_main(void) {
 
   // make a task to handle HID events
   espp::Task hid_task({
-      .name = "HID Task",
         .callback = [&](auto &m, auto &cv) -> bool {
           // set the task handle
           hid_task_handle_ = xTaskGetCurrentTaskHandle();
@@ -225,22 +237,47 @@ extern "C" void app_main(void) {
             std::this_thread::sleep_for(1s);
           }
 
-          // wait for the first notify (since the button data may have changed)
-          ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-
           if (switch_pro_handle != NULL) {
+            logger.info("Configuring Switch Pro Controller...");
             while (switch_pro_state != SwitchProState::READY) {
-              logger.info("Configuring Switch Pro Controller...");
-              logger.move_up();
-              logger.clear_line();
               configure_switch_pro();
               std::this_thread::sleep_for(1s);
             }
           }
 
+          bool button_level = BUTTON_RELEASED_LEVEL;
+
+          // wait until we can successfully set the button and get a packet
+          // (fully connected)
+          while (connected) {
+            // update the button level
+            button_level = !button_level;
+            // set the button
+            gpio_set_level(button_pin, button_level);
+            auto start = esp_timer_get_time();
+            // wait to get notified by the HID task
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+            auto end = esp_timer_get_time();
+            auto elapsed_time = end - start;
+            // if we got notified before the timeout, then we can break out of the loop
+            if (elapsed_time < (1000-1)*1000) {
+              logger.info("HID Device is ready, button press detected in {:.3f} ms", elapsed_time / 1000.0f);
+              break;
+            }
+          }
+
+          if (!connected) {
+            logger.error("HID Device disconnected before button press detected");
+            return false;
+          }
+
+          gpio_set_level(button_pin, BUTTON_RELEASED_LEVEL);
+
           // device is connected, start the latency test
           logger.info("Starting latency test");
-          fmt::print("% time (s), latency (ms)\n");
+          fmt::print("% time (s), latency (ms), num missed inputs\n");
+
+          uint32_t num_missed_inputs = 0;
 
           // loop until the device is disconnected
           while (connected) {
@@ -251,7 +288,7 @@ extern "C" void app_main(void) {
             static constexpr uint64_t MAX_LATENCY_MS = 200;
 
             // wait for (IDLE_US + shift) microseconds
-            std::this_thread::sleep_for(std::chrono::microseconds(IDLE_US + shift));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((IDLE_US + shift) / 1000));
 
             // trigger a button press
             button_press_start = esp_timer_get_time();
@@ -261,8 +298,12 @@ extern "C" void app_main(void) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MAX_LATENCY_MS));
             latency_us = esp_timer_get_time() - button_press_start;
 
-            // log the latency
-            fmt::print("{:.3f}, {:.3f}\n", elapsed(), latency_us / 1e3f);
+            if (latency_us < (MAX_LATENCY_MS-1) * 1000) {
+              // log the latency
+              fmt::print("{:.3f}, {:.3f}, {}\n", elapsed(), latency_us / 1e3f, num_missed_inputs);
+            } else {
+              num_missed_inputs++;
+            }
 
             // latency reached, release the button after hold time
             std::this_thread::sleep_for(std::chrono::microseconds(HOLD_TIME_US - latency_us));
@@ -275,27 +316,36 @@ extern "C" void app_main(void) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(MAX_LATENCY_MS));
             latency_us = esp_timer_get_time() - button_release_start;
 
-            // log the latency
-            fmt::print("{:.3f}, {:.3f}\n", elapsed(), latency_us / 1e3f);
+            if (latency_us < (MAX_LATENCY_MS-1) * 1000) {
+              // log the latency
+              fmt::print("{:.3f}, {:.3f}, {}\n", elapsed(), latency_us / 1e3f, num_missed_inputs);
+            } else {
+              num_missed_inputs++;
+            }
           }
           logger.info("HID Device disconnected");
 
         // we don't want to stop the task, so return false
         return false;
-      },
-        .stack_size_bytes = 8192,
-        .priority = 10,
-        .core_id = 0,
+        },
+          .task_config = {
+            .name = "HID Task",
+            .stack_size_bytes = 8192,
+            .priority = 10,
+            .core_id = 1,
+          },
         });
   hid_task.start();
-  // hid_task_handle_ = xTaskGetCurrentTaskHandle();
+
+  // set the task priority (for main) to high
+  vTaskPrioritySet(nullptr, 20);
 
   while (true) {
     if (xQueueReceive(app_event_queue, &evt_queue, portMAX_DELAY)) {
       if (APP_EVENT_HID_HOST ==  evt_queue.event_group) {
-        hid_host_device_event(evt_queue.hid_host_device.handle,
-                              evt_queue.hid_host_device.event,
-                              evt_queue.hid_host_device.arg);
+        handle_hid_host_device_event(evt_queue.hid_host_device.handle,
+                                     evt_queue.hid_host_device.event,
+                                     evt_queue.hid_host_device.arg);
       }
     }
   }
@@ -322,10 +372,11 @@ extern "C" void app_main(void) {
  *       means a change was detected. It uses the controller type as an index
  *       into the report_bytes array to determine which bytes to check (if any).
  */
-static bool check_report_changed(const uint8_t *const data, const int length) {
+static bool IRAM_ATTR check_report_changed(const uint8_t *const data, const int length) {
   int raw_controller_type = static_cast<int>(connected_controller_type.load());
-  if (raw_controller_type < 0 || raw_controller_type >= sizeof(report_bytes) / sizeof(report_bytes[0])) {
-    return true;
+  int report_id_value = input_report_id[raw_controller_type];
+  if (report_id_value != -1 && data[0] != report_id_value) {
+    return false;
   }
   int start_byte = report_bytes[raw_controller_type][0];
   int end_byte = report_bytes[raw_controller_type][1];
@@ -355,53 +406,52 @@ static bool check_report_changed(const uint8_t *const data, const int length) {
   return false;
 }
 
-// found https://github.com/ttsuki/ProControllerHid/tree/develop
-
-// handshake: (usb command, starts with 0x80)
-// - send {0x80, 0x02}, {}, true, handshake
-// - send {0x80, 0x03}, {}, true, set baudrate to 3Mbps
-// - send {0x80, 0x04}, {}, false, hid-only mode, turn off bluetooth
-
-// configure features: (subcommand, starts with 0x01, has packet counter (&0xf), always has rumble data, then sub command and data)
-// - 0x03, {0x30}, true, set input report mode
-// - 0x40, {0x01/0x00}, true, enable/disable imu data
-// - 0x48, {0x01}, true, enable vibration
-// - 0x38, {0x2F, 0x10, 0x11, 0x33, 0x33}, true, set home light animation
-// - 0x30, {led_data}, true, set player led status
-
-static constexpr uint8_t handshake[] = {0x80, 0x02};
-static constexpr uint8_t set_baudrate[] = {0x80, 0x03};
-static constexpr uint8_t hid_only_mode[] = {0x80, 0x04};
-
-static constexpr uint8_t set_input_report_mode[] = {0x01, 0x03, 0x30};
-
-// send the packets over the hid interface to the controller
-static constexpr uint8_t report_type = 0x50; // 0x50 for Switch Pro Controller
-static constexpr uint8_t report_id = 0x01; // 0x01 for Switch Pro Controller
+#include "switch_controller_protocol.hpp"
 
 void configure_switch_pro() {
+  if (!switch_pro_handle) {
+    logger.error("Switch Pro Controller handle is NULL, cannot configure");
+    return;
+  }
+
+  // originally found https://github.com/ttsuki/ProControllerHid/tree/develop
+
+  static constexpr uint8_t init_device_info[] = {sp::HOST_INIT_REPORT, sp::INIT_COMMAND_DEVICE_INFO};
+  static constexpr uint8_t init_handshake[] = {sp::HOST_INIT_REPORT, sp::INIT_COMMAND_HANDSHAKE};
+  static constexpr uint8_t init_set_baudrate[] = {sp::HOST_INIT_REPORT, sp::INIT_COMMAND_SET_BAUD_RATE};
+  static constexpr uint8_t init_enable_usb_hid[] = {sp::HOST_INIT_REPORT, sp::INIT_COMMAND_ENABLE_USB_HID};
+
+  // send the packets over the hid interface to the controller
+  static constexpr uint8_t report_type = HID_REPORT_TYPE_OUTPUT;
+  static constexpr uint8_t report_id = 0x01; // Note: switch pro doesn't actually care about the report ID
+
   switch (switch_pro_state) {
     case SwitchProState::DISCONNECTED:
       // do nothing
       break;
     case SwitchProState::CONNECTED:
       // send the handshake
-      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(handshake), sizeof(handshake)));
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(init_device_info), sizeof(init_device_info)));
+      switch_pro_state = SwitchProState::HANDSHAKE_1;
+      break;
+    case SwitchProState::DEVICE_INFO:
+      // send the handshake
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(init_handshake), sizeof(init_handshake)));
       switch_pro_state = SwitchProState::HANDSHAKE_1;
       break;
     case SwitchProState::HANDSHAKE_1:
       // send the set baudrate
-      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(set_baudrate), sizeof(set_baudrate)));
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(init_set_baudrate), sizeof(init_set_baudrate)));
       switch_pro_state = SwitchProState::SET_BAUDRATE;
       break;
     case SwitchProState::SET_BAUDRATE:
       switch_pro_state = SwitchProState::HANDSHAKE_2;
       // send the handshake
-      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(handshake), sizeof(handshake)));
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(init_handshake), sizeof(init_handshake)));
       break;
     case SwitchProState::HANDSHAKE_2:
       // send the hid only mode
-      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(hid_only_mode), sizeof(hid_only_mode)));
+      ESP_ERROR_CHECK(hid_class_request_set_report(switch_pro_handle, report_type, report_id, const_cast<uint8_t*>(init_enable_usb_hid), sizeof(init_enable_usb_hid)));
       switch_pro_state = SwitchProState::HID_ONLY_MODE;
       break;
     case SwitchProState::HID_ONLY_MODE:
@@ -425,13 +475,13 @@ void configure_switch_pro() {
  * @param[in] data    Pointer to input report data buffer
  * @param[in] length  Length of input report data buffer
  */
-static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
+static void IRAM_ATTR hid_host_generic_report_callback(const uint8_t *const data, const int length)
 {
   if (check_report_changed(data, length)) {
-    // convert to std::vector<uint8_t> for logging
-    std::vector<uint8_t> report(data, data + length);
-    logger.debug("Report changed[{}]: {::#02x}", report.size(), report);
     if (hid_task_handle_ != nullptr) vTaskNotifyGiveFromISR(hid_task_handle_, NULL);
+    logger.debug("Report changed[{}]: {::#02x}", length, std::vector<uint8_t>(data, data + length));
+  } else {
+    logger.debug("Report unchanged: {::#02x}", std::vector<uint8_t>(data, data + length));
   }
 }
 
@@ -442,9 +492,9 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
  * @param[in] event              HID Host interface event
  * @param[in] arg                Pointer to arguments, does not used
  */
-static void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
-                                        const hid_host_interface_event_t event,
-                                        void *arg)
+static void IRAM_ATTR hid_host_interface_event_callback(hid_host_device_handle_t hid_device_handle,
+                                                        const hid_host_interface_event_t event,
+                                                        void *arg)
 {
   uint8_t data[64] = { 0 };
   size_t data_length = 0;
@@ -454,6 +504,9 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
   if (connected_controller_type == ControllerType::SWITCH_PRO) {
     switch_pro_handle = hid_device_handle;
   }
+
+  logger.debug("HID Device Interface event: {}",
+              (int)(event));
 
   switch (event) {
   case HID_HOST_INTERFACE_EVENT_INPUT_REPORT:
@@ -489,9 +542,9 @@ static void hid_host_interface_callback(hid_host_device_handle_t hid_device_hand
  * @param[in] event              HID Host Device event
  * @param[in] arg                Pointer to arguments, does not used
  */
-static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
-                                  const hid_host_driver_event_t event,
-                                  void *arg)
+static void IRAM_ATTR handle_hid_host_device_event(hid_host_device_handle_t hid_device_handle,
+                                                     const hid_host_driver_event_t event,
+                                                     void *arg)
 {
   hid_host_dev_params_t dev_params;
   ESP_ERROR_CHECK(hid_host_device_get_params(hid_device_handle, &dev_params));
@@ -532,8 +585,14 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     }
     logger.info("  - Controller Type: {}", connected_controller_type.load());
 
-    const hid_host_device_config_t dev_config = {
-      .callback = hid_host_interface_callback,
+    if (connected_controller_type == ControllerType::SWITCH_PRO) {
+      switch_pro_state = SwitchProState::CONNECTED;
+      switch_pro_handle = hid_device_handle;
+      // configure_switch_pro();
+    }
+
+    static const hid_host_device_config_t dev_config = {
+      .callback = hid_host_interface_event_callback,
       .callback_arg = NULL
     };
 
@@ -546,19 +605,12 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
     }
     ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
 
-    if (connected_controller_type == ControllerType::SWITCH_PRO) {
-      switch_pro_state = SwitchProState::CONNECTED;
-      // get the report descriptor and print it out for debugging
-      size_t report_descriptor_length = 0;
-      uint8_t *desc = hid_host_get_report_descriptor(hid_device_handle,
-                                                     &report_descriptor_length);
-      std::vector<uint8_t> report_descriptor(desc, desc + report_descriptor_length);
-      logger.debug("Report Descriptor: {::#02x}", report_descriptor);
-
-      switch_pro_handle = hid_device_handle;
-      configure_switch_pro();
-    }
-
+    // get the report descriptor and print it out for debugging
+    size_t report_descriptor_length = 0;
+    uint8_t *desc = hid_host_get_report_descriptor(hid_device_handle,
+                                                   &report_descriptor_length);
+    std::vector<uint8_t> report_descriptor(desc, desc + report_descriptor_length);
+    logger.info("Report Descriptor: {::#02x}", report_descriptor);
   } break;
   default:
     break;
@@ -574,9 +626,9 @@ static void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
  * @param[in] event             HID Device event
  * @param[in] arg               Not used
  */
-static void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
-                              const hid_host_driver_event_t event,
-                              void *arg)
+static void IRAM_ATTR hid_host_driver_event_callback(hid_host_device_handle_t hid_device_handle,
+                                                     const hid_host_driver_event_t event,
+                                                     void *arg)
 {
   app_event_queue_t evt_queue;
   memset(&evt_queue, 0, sizeof(evt_queue));
@@ -596,7 +648,7 @@ static void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
  *
  * @param[in] arg  Not used
  */
-static void usb_lib_task(void *arg)
+static void IRAM_ATTR usb_lib_task(void *arg)
 {
   usb_host_config_t host_config;
   memset(&host_config, 0, sizeof(host_config));

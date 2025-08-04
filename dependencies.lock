@@ -1,15 +1,93 @@
 dependencies:
-  espressif/usb_host_hid:
-    component_hash: 9295f5fc8761aba10ff8ae6e734621bdf20f43b194c4d700b238ba320e59b176
+  espp/base_component:
+    component_hash: f4224d4295dab7b61a2a20c8897bc1f502ee692aaa829c818dd416fa2e3c2dfd
+    dependencies:
+    - name: espp/logger
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
     source:
-      service_url: https://api.components.espressif.com/
+      registry_url: https://components.espressif.com
       type: service
-    version: 1.0.2
+    version: 1.0.17
+  espp/format:
+    component_hash: fe1248e361db8e2ac39048ed7e3406087c8bbc4dc952a6020bc76080bc8a226e
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.17
+  espp/logger:
+    component_hash: 407e34218f43a3980953ca805f5e81515757fcefafa3ab763163518162ba7572
+    dependencies:
+    - name: espp/format
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.17
+  espp/task:
+    component_hash: 8647bfaedbf516101d5e56b31d1dc68e171c9110d9e931fa0f4e5b559b5653fd
+    dependencies:
+    - name: espp/base_component
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.17
+  espp/timer:
+    component_hash: c9153edfa0bee3922c02e5065c9916f17977e6fa2f936e4803f80b2660b8afa5
+    dependencies:
+    - name: espp/task
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.17
+  espressif/usb_host_hid:
+    component_hash: eabf03fe3cb1bdb5325d2725f420c6324c3e150033d893ce3737222929455a55
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    version: 1.0.3
   idf:
-    component_hash: null
     source:
       type: idf
-    version: 5.2.2
-manifest_hash: d72796683f8898bcadadea4a67adee73becfdb138865a596ba5aca9200a7271d
+    version: 5.4.1
+direct_dependencies:
+- espp/task
+- espp/timer
+- espressif/usb_host_hid
+- idf
+manifest_hash: 7e0824e916a31a37ac610e1dd1fd8171cddd95b2c16d2d2d31f92ce983453e7d
 target: esp32s3
-version: 1.0.0
+version: 2.0.0
