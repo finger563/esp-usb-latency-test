@@ -226,7 +226,7 @@ extern "C" void app_main(void) {
 
   // make a task to handle HID events
   espp::Task hid_task({
-        .callback = [&](auto &m, auto &cv) -> bool {
+        .callback = [&]() -> bool {
           // set the task handle
           hid_task_handle_ = xTaskGetCurrentTaskHandle();
 
